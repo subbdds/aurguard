@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-from aurg.cli import main
+from aurg.cli import run
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run())

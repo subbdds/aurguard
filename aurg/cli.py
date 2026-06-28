@@ -7,6 +7,14 @@ from .scanner import scan_fake_pkgbuild, scan_local_pkgbuild
 from .wrapper import install_package
 
 
+def run() -> int:
+    try:
+        return main()
+    except KeyboardInterrupt:
+        print()
+        return 130
+
+
 def main() -> int:
     args = parse_args()
 
