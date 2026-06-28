@@ -12,6 +12,10 @@ Rules:
 Review examples include sha256sums=('SKIP'), eval, unexpected network calls, systemctl enable, cron/autostart changes, hidden install hooks, or unusual obfuscation.
 Dangerous examples include curl/wget piped to sh/bash, base64 decode piped to shell, sudo/su/pkexec, chmod +s, unsafe rm -rf paths, or writes outside $pkgdir/$srcdir during package functions.
 
+Keep the summary field super brief:
+- Safe: use a short sentence like "No suspicious behavior found."
+- Review or Dangerous: use one short sentence naming only the main concern.
+
 Return only JSON matching the provided schema. Use exact file names and 1-based line numbers from the input."""
 
 

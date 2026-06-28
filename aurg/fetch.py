@@ -37,8 +37,11 @@ class CgitTreeParser(HTMLParser):
                 self.files.add(path)
 
 
-def fetch_build_files(package: str) -> list[BuildFile]:
+def fetch_build_files(package: str, scan_mode: str = "full") -> list[BuildFile]:
     validate_package_name(package)
+    if scan_mode == "pkgbuild":
+        return [BuildFile("PKGBUILD", fetch_plain_file(package, "PKGBUILD"))]
+
     discovered = discover_build_file_paths(package)
     if "PKGBUILD" not in discovered:
         raise AurgError("AUR tree did not contain PKGBUILD")

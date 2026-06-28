@@ -1,7 +1,8 @@
 import argparse
 from pathlib import Path
+import sys
 
-from .config import APP_NAME, DEFAULT_MODEL, configured_model
+from .config import APP_NAME, DEFAULT_MODEL, ConfigError, ConfigOverrides, load_config
 from .output import exit_code_for_verdict, print_result
 from .scanner import scan_fake_pkgbuild, scan_local_pkgbuild
 from .wrapper import install_package
@@ -17,19 +18,32 @@ def run() -> int:
 
 def main() -> int:
     args = parse_args()
+    try:
+        config = load_config(
+            args.config,
+            args.secrets,
+            ConfigOverrides(
+                aur_helper=args.aur_helper,
+                scan_mode=args.scan_mode,
+                model=args.model,
+            ),
+        )
+    except ConfigError as exc:
+        print(f"Config error: {exc}", file=sys.stderr)
+        return 2
 
     if args.command == "scan":
-        result = scan_local_pkgbuild(Path(args.path), args.model, args.no_ai)
+        result = scan_local_pkgbuild(Path(args.path), config, args.no_ai)
         print_result(result)
         return exit_code_for_verdict(result.verdict)
 
     if args.command == "scanfake":
-        result = scan_fake_pkgbuild(Path(args.path), args.model, args.no_ai)
+        result = scan_fake_pkgbuild(Path(args.path), config, args.no_ai)
         print_result(result)
         return exit_code_for_verdict(result.verdict)
 
     if args.sync_package:
-        return install_package(args.sync_package, args.model, args.no_ai, args.force_dangerous)
+        return install_package(args.sync_package, config, args.no_ai, args.force_dangerous)
 
     print("Nothing to do. Try: aurg -S package, aurg scan ./PKGBUILD, or aurg scanfake ./fake.PKGBUILD")
     return 2
@@ -40,6 +54,8 @@ def parse_args() -> argparse.Namespace:
         prog=APP_NAME,
         description="A tiny yay/paru wrapper that scans an AUR PKGBUILD before installing.",
     )
+    parser.add_argument("--config", help="Path to config.toml. Default: ~/.config/aurg/config.toml")
+    parser.add_argument("--secrets", help="Path to secrets.env. Default: ~/.config/aurg/secrets.env")
     parser.add_argument("--no-ai", action="store_true", help="Use local fallback rules only.")
     parser.add_argument(
         "--force-dangerous",
@@ -48,9 +64,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=configured_model(),
+        default=None,
         help=f"Gemini model name. Default: {DEFAULT_MODEL}",
     )
+    parser.add_argument("--scan-mode", choices=("full", "pkgbuild"), help="Files to scan. Default: config value.")
+    parser.add_argument("--aur-helper", choices=("auto", "yay", "paru"), help="AUR helper to run. Default: config value.")
 
     subparsers = parser.add_subparsers(dest="command")
     scan_parser = subparsers.add_parser("scan", help="Scan a local PKGBUILD file or package folder.")

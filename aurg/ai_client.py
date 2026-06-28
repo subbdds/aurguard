@@ -2,20 +2,22 @@ import json
 import urllib.parse
 import urllib.request
 
-from .config import GEMINI_ENDPOINT_BASE, USER_AGENT, VERDICT_ORDER, google_api_key
+from .config import Config, GEMINI_ENDPOINT_BASE, USER_AGENT, VERDICT_ORDER
 from .models import BuildFile, Finding, ScanResult
 from .prompts import SYSTEM_PROMPT, build_user_prompt
 from .schemas import AI_RESPONSE_SCHEMA
 
 
-def scan_with_ai(files: list[BuildFile], model: str, cache_key: str) -> ScanResult | None:
-    api_key = google_api_key()
+def scan_with_ai(files: list[BuildFile], config: Config, cache_key: str) -> ScanResult | None:
+    api_key = config.api_key
     if not api_key:
+        if config.require_ai:
+            return api_failure_result(files, cache_key, "Google API key is required. Set GEMINI_API_KEY or GOOGLE_API_KEY in the environment or secrets file.")
         return None
 
     payload = build_gemini_payload(files)
     data = json.dumps(payload).encode("utf-8")
-    quoted_model = urllib.parse.quote(model, safe="")
+    quoted_model = urllib.parse.quote(config.model, safe="")
     url = f"{GEMINI_ENDPOINT_BASE}/{quoted_model}:generateContent"
     request = urllib.request.Request(
         url,
