@@ -1,4 +1,4 @@
-from .models import ScanResult
+from .models import ScanResult, UpdateScanResult
 
 
 def print_result(result: ScanResult) -> None:
@@ -19,6 +19,21 @@ def print_result(result: ScanResult) -> None:
 
     print()
     print(f"Final verdict: {result.verdict}")
+
+
+def print_update_result(result: UpdateScanResult) -> None:
+    print(result.summary)
+    for package in result.packages:
+        print(f"{package.name}: {package.verdict} ({package.source})")
+        if package.summary:
+            print(package.summary)
+        for finding in package.findings:
+            print(f"{finding.severity.upper()}: {package.name}/{finding.file}:{finding.line}")
+            if finding.text:
+                print(finding.text)
+            print(finding.reason)
+    print()
+    print(f"Final update verdict: {result.verdict}")
 
 
 def confirm_continue() -> bool:

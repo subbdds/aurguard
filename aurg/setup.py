@@ -1,7 +1,12 @@
 from collections.abc import Callable
 import shutil
+import subprocess
+import sys
 
 from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, write_config_file, write_secrets_file
+from .errors import AurgError
+from .fetch import fetch_build_files
+from .state import load_state, save_state, update_baseline
 
 
 InputFunc = Callable[[str], str]
@@ -39,10 +44,45 @@ def run_setup(
 
     write_config_file(paths.config, config)
     write_secrets_file(paths.secrets, provider, api_key)
+    record_setup_baselines(config)
 
     print(f"Wrote config: {paths.config}")
     print(f"Wrote secrets: {paths.secrets}")
     return config
+
+
+def record_setup_baselines(config: Config) -> None:
+    packages = list_installed_foreign_packages()
+    if packages is None:
+        print("Could not record installed AUR package baseline: pacman -Qqm failed.", file=sys.stderr)
+        return
+    if not packages:
+        return
+
+    state = load_state()
+    recorded = 0
+    for package in packages:
+        try:
+            files = fetch_build_files(package, config.scan_mode)
+        except AurgError as exc:
+            print(f"Could not baseline {package}: {exc}", file=sys.stderr)
+            continue
+        update_baseline(state, package, files, "setup-installed")
+        recorded += 1
+
+    if recorded:
+        save_state(state)
+        print(f"Recorded {recorded} installed AUR package baselines without AI scanning.")
+
+
+def list_installed_foreign_packages() -> list[str] | None:
+    try:
+        completed = subprocess.run(["pacman", "-Qqm"], check=False, capture_output=True, text=True)
+    except OSError:
+        return None
+    if completed.returncode not in {0, 1}:
+        return None
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
 def choose_aur_helper(input_func: InputFunc) -> str:

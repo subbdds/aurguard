@@ -9,6 +9,7 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_PROVIDER = "google"
 DEFAULT_AUR_HELPER = "auto"
 DEFAULT_SCAN_MODE = "full"
+DEFAULT_UPDATE_AI_MAX_REQUESTS = 4
 PROMPT_VERSION = "aurg-prompt-v2"
 RULES_VERSION = "aurg-rules-v1"
 GEMINI_ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -41,6 +42,7 @@ class Config:
     provider: str = DEFAULT_PROVIDER
     model: str = DEFAULT_MODEL
     require_ai: bool = True
+    update_ai_max_requests: int = DEFAULT_UPDATE_AI_MAX_REQUESTS
     api_key: str | None = None
     config_path: Path | None = None
     secrets_path: Path | None = None
@@ -58,6 +60,17 @@ def default_config_dir() -> Path:
     if xdg_config_home:
         return Path(xdg_config_home) / APP_NAME
     return Path.home() / ".config" / APP_NAME
+
+
+def default_state_dir() -> Path:
+    xdg_state_home = os.environ.get("XDG_STATE_HOME")
+    if xdg_state_home:
+        return Path(xdg_state_home) / APP_NAME
+    return Path.home() / ".local" / "state" / APP_NAME
+
+
+def default_state_path() -> Path:
+    return default_state_dir() / "packages.json"
 
 
 def resolve_config_path(path: str | Path | None = None) -> Path:
@@ -103,6 +116,7 @@ def load_config(
         provider=read_string(data, "provider", DEFAULT_PROVIDER),
         model=read_string(data, "model", DEFAULT_MODEL),
         require_ai=read_bool(data, "require_ai", True),
+        update_ai_max_requests=read_int(data, "update_ai_max_requests", DEFAULT_UPDATE_AI_MAX_REQUESTS),
         config_path=paths.config,
         secrets_path=paths.secrets,
     )
@@ -145,6 +159,13 @@ def read_bool(data: dict, key: str, default: bool) -> bool:
     return value
 
 
+def read_int(data: dict, key: str, default: int) -> int:
+    value = data.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(f"Invalid config value {key}: expected an integer")
+    return value
+
+
 def apply_env_overrides(config: Config) -> None:
     config.aur_helper = os.environ.get("AURG_AUR_HELPER", config.aur_helper)
     config.scan_mode = os.environ.get("AURG_SCAN_MODE", config.scan_mode)
@@ -153,6 +174,9 @@ def apply_env_overrides(config: Config) -> None:
     require_ai = os.environ.get("AURG_REQUIRE_AI")
     if require_ai is not None:
         config.require_ai = parse_env_bool("AURG_REQUIRE_AI", require_ai)
+    update_ai_max_requests = os.environ.get("AURG_UPDATE_AI_MAX_REQUESTS")
+    if update_ai_max_requests is not None:
+        config.update_ai_max_requests = parse_env_int("AURG_UPDATE_AI_MAX_REQUESTS", update_ai_max_requests)
 
 
 def apply_cli_overrides(config: Config, overrides: ConfigOverrides) -> None:
@@ -173,6 +197,14 @@ def parse_env_bool(name: str, value: str) -> bool:
     raise ConfigError(f"Invalid environment value {name}: expected true or false")
 
 
+def parse_env_int(name: str, value: str) -> int:
+    try:
+        parsed = int(value.strip())
+    except ValueError as exc:
+        raise ConfigError(f"Invalid environment value {name}: expected an integer") from exc
+    return parsed
+
+
 def validate_config(config: Config) -> None:
     if config.aur_helper not in VALID_AUR_HELPERS:
         raise ConfigError(f"Invalid aur_helper: {config.aur_helper}. Expected one of: {', '.join(sorted(VALID_AUR_HELPERS))}")
@@ -184,6 +216,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError(f"Provider not implemented yet: {config.provider}. Only google is supported in this version.")
     if not config.model:
         raise ConfigError("Invalid model: expected a non-empty model name")
+    if config.update_ai_max_requests < 1:
+        raise ConfigError("Invalid update_ai_max_requests: expected a positive integer")
 
 
 def resolve_api_key(provider: str, secrets_path: Path) -> str | None:
@@ -247,6 +281,7 @@ def format_config(config: Config) -> str:
             f'provider = "{config.provider}"',
             f'model = "{config.model}"',
             f"require_ai = {require_ai}",
+            f"update_ai_max_requests = {config.update_ai_max_requests}",
             "",
         ]
     )

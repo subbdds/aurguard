@@ -8,13 +8,17 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aurg.config import ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
+from aurg.ai_client import validate_update_ai_result
+from aurg.config import Config, ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
 from aurg.fetch import CgitTreeParser, should_scan_build_file
-from aurg.models import BuildFile
+from aurg.models import BuildFile, UpdatePackageInput
 from aurg.prompts import build_user_prompt
 from aurg.scanner import read_local_build_files
+from aurg.state import PackageBaseline, PackageState, StoredBuildFile, hash_text, load_state, save_state
 from aurg.setup import run_setup
-from aurg.wrapper import classify_helper_args
+from aurg.update_scan import build_update_input, split_evenly
+from aurg.wrapper import AurUpdate, classify_helper_args, run_scanned_helper_command, scan_update_candidates
+import aurg.setup as setup
 import aurg.wrapper as wrapper
 
 
@@ -122,6 +126,7 @@ require_ai = true
     assert config.provider == "google"
     assert config.model == "gemini-cli"
     assert config.api_key == "secret-value"
+    assert config.update_ai_max_requests == 4
 
 
 def test_config_rejects_unimplemented_provider() -> None:
@@ -204,9 +209,14 @@ def test_setup_writes_config_and_secrets() -> None:
         root = Path(temp_dir)
         paths = ConfigPaths(root / "config.toml", root / "secrets.env")
         answers = iter(["", "", "", "setup-secret", "gemini-custom"])
+        original_list = setup.list_installed_foreign_packages
 
-        with contextlib.redirect_stdout(io.StringIO()):
-            run_setup(paths, input_func=lambda prompt: next(answers))
+        try:
+            setup.list_installed_foreign_packages = lambda: []
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+        finally:
+            setup.list_installed_foreign_packages = original_list
         config = load_config(paths.config, paths.secrets)
 
     assert config.aur_helper == "auto"
@@ -214,6 +224,141 @@ def test_setup_writes_config_and_secrets() -> None:
     assert config.provider == "google"
     assert config.model == "gemini-custom"
     assert config.api_key == "setup-secret"
+    assert config.update_ai_max_requests == 4
+
+
+def test_setup_records_installed_package_baselines() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        os.environ["XDG_STATE_HOME"] = str(root / "state")
+        paths = ConfigPaths(root / "config.toml", root / "secrets.env")
+        answers = iter(["", "", "", "setup-secret", "gemini-custom"])
+        original_list = setup.list_installed_foreign_packages
+        original_fetch = setup.fetch_build_files
+        try:
+            setup.list_installed_foreign_packages = lambda: ["demo"]
+            setup.fetch_build_files = lambda package, scan_mode: [BuildFile("PKGBUILD", f"pkgname={package}\n")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+            state = load_state()
+        finally:
+            setup.list_installed_foreign_packages = original_list
+            setup.fetch_build_files = original_fetch
+
+    assert state.packages["demo"].baseline_reason == "setup-installed"
+    assert state.packages["demo"].files["PKGBUILD"].text == "pkgname=demo\n"
+
+
+def test_unchanged_update_package_skips_ai() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        os.environ["XDG_STATE_HOME"] = str(Path(temp_dir) / "state")
+        files = [BuildFile("PKGBUILD", "pkgname=demo\n")]
+        state = PackageState(
+            {
+                "demo": PackageBaseline(
+                    "demo",
+                    "setup-installed",
+                    None,
+                    {"PKGBUILD": StoredBuildFile(hash_text(files[0].text), files[0].text)},
+                )
+            }
+        )
+        save_state(state)
+        original_fetch = wrapper.fetch_build_files
+        original_scan_updates = wrapper.scan_update_packages
+        called = {"ai": False}
+        try:
+            wrapper.fetch_build_files = lambda package, scan_mode: files
+            wrapper.scan_update_packages = lambda packages, config, no_ai=False: called.__setitem__("ai", True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = scan_update_candidates([AurUpdate("demo", "1", "2")], Config(api_key="key"), False, False)
+        finally:
+            wrapper.fetch_build_files = original_fetch
+            wrapper.scan_update_packages = original_scan_updates
+
+    assert result == {"demo": files}
+    assert not called["ai"]
+
+
+def test_changed_update_package_builds_diff_input() -> None:
+    baseline = PackageBaseline(
+        "demo",
+        "setup-installed",
+        "1-1",
+        {"PKGBUILD": StoredBuildFile(hash_text("pkgname=demo\npkgver=1\n"), "pkgname=demo\npkgver=1\n")},
+    )
+
+    update_input = build_update_input("demo", baseline, [BuildFile("PKGBUILD", "pkgname=demo\npkgver=2\n")], "2-1")
+
+    assert update_input.name == "demo"
+    assert update_input.new_version == "2-1"
+    assert update_input.files[0].name == "PKGBUILD"
+    assert "-pkgver=1" in update_input.files[0].text
+    assert "+pkgver=2" in update_input.files[0].text
+
+
+def test_update_fragmentation_splits_packages_evenly() -> None:
+    packages = [UpdatePackageInput(f"pkg{i}", None, None, "setup-installed", [BuildFile("PKGBUILD", "diff")], []) for i in range(40)]
+
+    batches = split_evenly(packages, 4)
+
+    assert [len(batch) for batch in batches] == [10, 10, 10, 10]
+
+
+def test_update_fragmentation_uses_needed_request_count() -> None:
+    packages = [UpdatePackageInput(f"pkg{i}", None, None, "setup-installed", [BuildFile("PKGBUILD", "diff")], []) for i in range(3)]
+
+    batches = split_evenly(packages, 4)
+
+    assert [len(batch) for batch in batches] == [1, 1, 1]
+
+
+def test_update_ai_result_aggregation_uses_worst_verdict() -> None:
+    packages = [
+        UpdatePackageInput("safe-pkg", None, None, "setup-installed", [BuildFile("PKGBUILD", "diff")], [BuildFile("PKGBUILD", "pkgname=safe-pkg")]),
+        UpdatePackageInput("review-pkg", None, None, "setup-installed", [BuildFile("PKGBUILD", "diff")], [BuildFile("PKGBUILD", "pkgname=review-pkg")]),
+    ]
+
+    result = validate_update_ai_result(
+        {
+            "packages": [
+                {"name": "safe-pkg", "verdict": "Safe", "findings": [], "summary": "ok"},
+                {
+                    "name": "review-pkg",
+                    "verdict": "Review",
+                    "findings": [{"file": "PKGBUILD", "line": 1, "severity": "Review", "reason": "changed source"}],
+                    "summary": "check",
+                },
+            ]
+        },
+        packages,
+    )
+
+    assert result.verdict == "Review"
+    assert [package.verdict for package in result.packages] == ["Safe", "Review"]
+
+
+def test_state_is_written_only_after_successful_helper_run() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        os.environ["XDG_STATE_HOME"] = str(Path(temp_dir) / "state")
+        files = [BuildFile("PKGBUILD", "pkgname=demo\n")]
+        original_find = wrapper.find_aur_helper
+        original_scan = wrapper.scan_packages
+        original_run = wrapper.run_helper
+        try:
+            wrapper.find_aur_helper = lambda preference: "/usr/bin/yay"
+            wrapper.scan_packages = lambda packages, config, no_ai=False, force_dangerous=False: {"demo": files}
+            wrapper.run_helper = lambda args, config, helper=None: 1
+            assert run_scanned_helper_command(["-S", "demo"], ["demo"], False, Config(), False, False) == 1
+            assert "demo" not in load_state().packages
+
+            wrapper.run_helper = lambda args, config, helper=None: 0
+            assert run_scanned_helper_command(["-S", "demo"], ["demo"], False, Config(), False, False) == 0
+            assert load_state().packages["demo"].baseline_reason == "scanned-install"
+        finally:
+            wrapper.find_aur_helper = original_find
+            wrapper.scan_packages = original_scan
+            wrapper.run_helper = original_run
 
 
 def test_default_config_path_detection() -> None:
@@ -233,6 +378,8 @@ class clean_config_env:
         "AURG_PROVIDER",
         "AURG_MODEL",
         "AURG_REQUIRE_AI",
+        "AURG_UPDATE_AI_MAX_REQUESTS",
+        "XDG_STATE_HOME",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "OPENAI_API_KEY",
@@ -263,4 +410,11 @@ if __name__ == "__main__":
     test_aur_helper_selection()
     test_helper_arg_classification()
     test_setup_writes_config_and_secrets()
+    test_setup_records_installed_package_baselines()
+    test_unchanged_update_package_skips_ai()
+    test_changed_update_package_builds_diff_input()
+    test_update_fragmentation_splits_packages_evenly()
+    test_update_fragmentation_uses_needed_request_count()
+    test_update_ai_result_aggregation_uses_worst_verdict()
+    test_state_is_written_only_after_successful_helper_run()
     test_default_config_path_detection()
