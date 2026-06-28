@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 APP_NAME = "aurg"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 PROMPT_VERSION = "aurg-prompt-v1"
 RULES_VERSION = "aurg-rules-v1"
 GEMINI_ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models"

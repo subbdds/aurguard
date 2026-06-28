@@ -27,6 +27,9 @@ def install_package(package: str, model: str, no_ai: bool = False, force_dangero
         print("Installation cancelled.")
         return 1
 
+    if result.verdict == "Safe":
+        print("Package marked safe; continuing installation.")
+
     helper = find_aur_helper()
     if not helper:
         print("No AUR helper found. Install yay or paru, then retry.", file=sys.stderr)

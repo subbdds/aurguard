@@ -2,9 +2,9 @@ from .models import ScanResult
 
 
 def print_result(result: ScanResult) -> None:
-    print(f"{result.verdict} ({result.source})")
-    if result.summary:
-        print(result.summary)
+    print(f"Verdict: {result.verdict}")
+    if result.verdict == "Safe":
+        return
 
     for finding in result.findings:
         print()
