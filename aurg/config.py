@@ -85,6 +85,10 @@ def resolve_config_paths(config_path: str | Path | None = None, secrets_path: st
     )
 
 
+def uses_default_config_paths(config_path: str | Path | None = None, secrets_path: str | Path | None = None) -> bool:
+    return not config_path and not secrets_path and not os.environ.get("AURG_CONFIG_FILE") and not os.environ.get("AURG_SECRETS_FILE")
+
+
 def load_config(
     config_path: str | Path | None = None,
     secrets_path: str | Path | None = None,
@@ -232,6 +236,48 @@ def parse_env_file(path: Path) -> dict[str, str]:
         if key and key.replace("_", "").isalnum():
             values[key] = value
     return values
+
+
+def format_config(config: Config) -> str:
+    require_ai = "true" if config.require_ai else "false"
+    return "\n".join(
+        [
+            f'aur_helper = "{config.aur_helper}"',
+            f'scan_mode = "{config.scan_mode}"',
+            f'provider = "{config.provider}"',
+            f'model = "{config.model}"',
+            f"require_ai = {require_ai}",
+            "",
+        ]
+    )
+
+
+def write_config_file(path: Path, config: Config) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(format_config(config), encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"Could not write config file {path}: {exc}") from exc
+
+
+def write_secrets_file(path: Path, provider: str, api_key: str) -> None:
+    names = provider_api_env_names(provider)
+    if not names:
+        raise ConfigError(f"No API key name is known for provider: {provider}")
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as secrets_file:
+            secrets_file.write(f"{names[0]}={quote_env_value(api_key)}\n")
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        raise ConfigError(f"Could not write secrets file {path}: {exc}") from exc
+
+
+def quote_env_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def load_dotenv(path: Path | None = None) -> None:

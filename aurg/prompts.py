@@ -9,12 +9,11 @@ Rules:
 - Review: potentially risky or unusual behavior, but not clearly malicious.
 - Dangerous: clearly unsafe or out-of-line PKGBUILD behavior.
 
-Review examples include sha256sums=('SKIP'), eval, unexpected network calls, systemctl enable, cron/autostart changes, hidden install hooks, or unusual obfuscation.
-Dangerous examples include curl/wget piped to sh/bash, base64 decode piped to shell, sudo/su/pkexec, chmod +s, unsafe rm -rf paths, or writes outside $pkgdir/$srcdir during package functions.
+Remember, everything is suspicious until proven safe. If something can even in theory be potentially harmful or dangerous, classify it as Review. Think your decision through.
 
-Keep the summary field super brief:
-- Safe: use a short sentence like "No suspicious behavior found."
-- Review or Dangerous: use one short sentence naming only the main concern.
+Remember to be strict and conservative in your classification. If in doubt, classify as Review. This is a security review, and is very sensitive, remember that.
+
+Keep the summary as brief as possible, but it should not affect your judgment.
 
 Return only JSON matching the provided schema. Use exact file names and 1-based line numbers from the input."""
 

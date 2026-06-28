@@ -1,4 +1,6 @@
 from pathlib import Path
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -6,11 +8,12 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aurg.config import ConfigError, ConfigOverrides, load_config
+from aurg.config import ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
 from aurg.fetch import CgitTreeParser, should_scan_build_file
 from aurg.models import BuildFile
 from aurg.prompts import build_user_prompt
 from aurg.scanner import read_local_build_files
+from aurg.setup import run_setup
 import aurg.wrapper as wrapper
 
 
@@ -145,6 +148,31 @@ def test_aur_helper_selection() -> None:
         wrapper.shutil.which = original_which
 
 
+def test_setup_writes_config_and_secrets() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        paths = ConfigPaths(root / "config.toml", root / "secrets.env")
+        answers = iter(["", "", "", "setup-secret", "gemini-custom"])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_setup(paths, input_func=lambda prompt: next(answers))
+        config = load_config(paths.config, paths.secrets)
+
+    assert config.aur_helper == "auto"
+    assert config.scan_mode == "full"
+    assert config.provider == "google"
+    assert config.model == "gemini-custom"
+    assert config.api_key == "setup-secret"
+
+
+def test_default_config_path_detection() -> None:
+    with clean_config_env():
+        assert uses_default_config_paths()
+        assert not uses_default_config_paths("configs/config.toml", None)
+        os.environ["AURG_CONFIG_FILE"] = "configs/config.toml"
+        assert not uses_default_config_paths()
+
+
 class clean_config_env:
     KEYS = (
         "AURG_CONFIG_FILE",
@@ -182,3 +210,5 @@ if __name__ == "__main__":
     test_config_and_secrets_override_paths()
     test_config_rejects_unimplemented_provider()
     test_aur_helper_selection()
+    test_setup_writes_config_and_secrets()
+    test_default_config_path_detection()

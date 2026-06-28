@@ -2,9 +2,18 @@ import argparse
 from pathlib import Path
 import sys
 
-from .config import APP_NAME, DEFAULT_MODEL, ConfigError, ConfigOverrides, load_config
+from .config import (
+    APP_NAME,
+    DEFAULT_MODEL,
+    ConfigError,
+    ConfigOverrides,
+    load_config,
+    resolve_config_paths,
+    uses_default_config_paths,
+)
 from .output import exit_code_for_verdict, print_result
 from .scanner import scan_fake_pkgbuild, scan_local_pkgbuild
+from .setup import run_setup
 from .wrapper import install_package
 
 
@@ -18,6 +27,27 @@ def run() -> int:
 
 def main() -> int:
     args = parse_args()
+    paths = resolve_config_paths(args.config, args.secrets)
+
+    if args.command == "setup":
+        try:
+            run_setup(paths)
+        except ConfigError as exc:
+            print(f"Setup error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if uses_default_config_paths(args.config, args.secrets) and not paths.config.is_file():
+        if not sys.stdin.isatty():
+            print(f"No config found at {paths.config}. Run: aurg setup", file=sys.stderr)
+            return 2
+        print(f"No config found at {paths.config}. Starting first-run setup.")
+        try:
+            run_setup(paths)
+        except ConfigError as exc:
+            print(f"Setup error: {exc}", file=sys.stderr)
+            return 2
+
     try:
         config = load_config(
             args.config,
@@ -71,6 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aur-helper", choices=("auto", "yay", "paru"), help="AUR helper to run. Default: config value.")
 
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("setup", help="Create ~/.config/aurg/config.toml and secrets.env.")
     scan_parser = subparsers.add_parser("scan", help="Scan a local PKGBUILD file or package folder.")
     scan_parser.add_argument("path")
     fake_parser = subparsers.add_parser("scanfake", help="Scan a standalone fake PKGBUILD file.")
