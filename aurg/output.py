@@ -2,9 +2,13 @@ from .models import ScanResult
 
 
 def print_result(result: ScanResult) -> None:
-    print(f"Verdict: {result.verdict}")
     if result.verdict == "Safe":
-        return
+        print(f"SAFE: scan passed ({result.source})")
+    else:
+        print(f"{result.verdict} ({result.source})")
+
+    if result.summary:
+        print(result.summary)
 
     for finding in result.findings:
         print()
@@ -13,13 +17,16 @@ def print_result(result: ScanResult) -> None:
             print(finding.text)
         print(finding.reason)
 
+    print()
+    print(f"Final verdict: {result.verdict}")
+
 
 def confirm_continue() -> bool:
     try:
         answer = input("Continue anyway? [y/N] ")
     except EOFError:
         return False
-    return answer.strip().lower() in {"y", "yes"}
+    return answer.strip().lower() in {"y", "yes", "д", "н"}
 
 
 def exit_code_for_verdict(verdict: str) -> int:
