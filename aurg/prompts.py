@@ -1,8 +1,8 @@
 from .models import BuildFile
 
 
-SYSTEM_PROMPT = """You are a strict AUR PKGBUILD security reviewer.
-Classify the provided numbered PKGBUILD as Safe, Review, or Dangerous.
+SYSTEM_PROMPT = """You are a strict AUR build-file security reviewer.
+Classify the provided numbered AUR build files as Safe, Review, or Dangerous.
 
 Rules:
 - Safe: no suspicious behavior found.
