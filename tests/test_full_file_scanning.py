@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from aurg.ai_client import validate_update_ai_result
 from aurg.config import Config, ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
+from aurg.errors import AurgError
 from aurg.fetch import CgitTreeParser, should_scan_build_file
 from aurg.models import BuildFile, UpdatePackageInput
 from aurg.prompts import build_user_prompt
@@ -227,6 +228,28 @@ def test_setup_writes_config_and_secrets() -> None:
     assert config.update_ai_max_requests == 4
 
 
+def test_setup_reuses_existing_secret_api_key() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        paths = ConfigPaths(root / "config.toml", root / "secrets.env")
+        paths.secrets.write_text('GEMINI_API_KEY="existing-secret"\n', encoding="utf-8")
+        answers = iter(["", "", "", "gemini-custom"])
+        original_list = setup.list_installed_foreign_packages
+
+        try:
+            setup.list_installed_foreign_packages = lambda: []
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+        finally:
+            setup.list_installed_foreign_packages = original_list
+        config = load_config(paths.config, paths.secrets)
+
+    assert config.api_key == "existing-secret"
+    assert config.model == "gemini-custom"
+    assert "Using existing Google API key." in output.getvalue()
+
+
 def test_setup_records_installed_package_baselines() -> None:
     with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -238,7 +261,8 @@ def test_setup_records_installed_package_baselines() -> None:
         try:
             setup.list_installed_foreign_packages = lambda: ["demo"]
             setup.fetch_build_files = lambda package, scan_mode: [BuildFile("PKGBUILD", f"pkgname={package}\n")]
-            with contextlib.redirect_stdout(io.StringIO()):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
                 run_setup(paths, input_func=lambda prompt: next(answers))
             state = load_state()
         finally:
@@ -247,6 +271,40 @@ def test_setup_records_installed_package_baselines() -> None:
 
     assert state.packages["demo"].baseline_reason == "setup-installed"
     assert state.packages["demo"].files["PKGBUILD"].text == "pkgname=demo\n"
+    assert "Baseline complete: recorded 1/1; skipped 0." in output.getvalue()
+
+
+def test_setup_baseline_failures_are_summarized() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        os.environ["XDG_STATE_HOME"] = str(root / "state")
+        paths = ConfigPaths(root / "config.toml", root / "secrets.env")
+        answers = iter(["", "", "", "setup-secret", "gemini-custom"])
+        original_list = setup.list_installed_foreign_packages
+        original_fetch = setup.fetch_build_files
+        try:
+            setup.list_installed_foreign_packages = lambda: ["demo", "external"]
+
+            def fake_fetch(package: str, scan_mode: str) -> list[BuildFile]:
+                if package == "external":
+                    raise AurgError("not found")
+                return [BuildFile("PKGBUILD", f"pkgname={package}\n")]
+
+            setup.fetch_build_files = fake_fetch
+            output = io.StringIO()
+            error = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+            state = load_state()
+        finally:
+            setup.list_installed_foreign_packages = original_list
+            setup.fetch_build_files = original_fetch
+
+    assert "demo" in state.packages
+    assert "external" not in state.packages
+    assert "Baseline complete: recorded 1/2; skipped 1." in output.getvalue()
+    assert "external: not found" in output.getvalue()
+    assert "Could not baseline" not in error.getvalue()
 
 
 def test_unchanged_update_package_skips_ai() -> None:
@@ -410,7 +468,9 @@ if __name__ == "__main__":
     test_aur_helper_selection()
     test_helper_arg_classification()
     test_setup_writes_config_and_secrets()
+    test_setup_reuses_existing_secret_api_key()
     test_setup_records_installed_package_baselines()
+    test_setup_baseline_failures_are_summarized()
     test_unchanged_update_package_skips_ai()
     test_changed_update_package_builds_diff_input()
     test_update_fragmentation_splits_packages_evenly()

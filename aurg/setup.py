@@ -3,13 +3,14 @@ import shutil
 import subprocess
 import sys
 
-from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, write_config_file, write_secrets_file
+from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, resolve_api_key, write_config_file, write_secrets_file
 from .errors import AurgError
 from .fetch import fetch_build_files
 from .state import load_state, save_state, update_baseline
 
 
 InputFunc = Callable[[str], str]
+MAX_BASELINE_FAILURE_SAMPLES = 5
 
 
 WARNING = """\
@@ -28,7 +29,7 @@ def run_setup(
     aur_helper = choose_aur_helper(input_func)
     scan_mode = choose_scan_mode(input_func)
     provider = choose_provider(input_func)
-    api_key = ask_api_key(provider, input_func)
+    api_key = resolve_existing_api_key(provider, paths) or ask_api_key(provider, input_func)
     model = choose_model(provider, input_func)
 
     config = Config(
@@ -51,6 +52,17 @@ def run_setup(
     return config
 
 
+def resolve_existing_api_key(provider: str, paths: ConfigPaths) -> str | None:
+    api_key = resolve_api_key(provider, paths.secrets)
+    if api_key:
+        print(f"Using existing {provider_label(provider)} API key.")
+    return api_key
+
+
+def provider_label(provider: str) -> str:
+    return "Google" if provider == "google" else provider
+
+
 def record_setup_baselines(config: Config) -> None:
     packages = list_installed_foreign_packages()
     if packages is None:
@@ -61,18 +73,41 @@ def record_setup_baselines(config: Config) -> None:
 
     state = load_state()
     recorded = 0
-    for package in packages:
+    failures: list[tuple[str, str]] = []
+    total = len(packages)
+    print(f"Recording installed AUR package baselines: 0/{total}", end="", flush=True)
+    for index, package in enumerate(packages, start=1):
         try:
             files = fetch_build_files(package, config.scan_mode)
         except AurgError as exc:
-            print(f"Could not baseline {package}: {exc}", file=sys.stderr)
+            failures.append((package, str(exc)))
+            print_baseline_progress(index, total, recorded, len(failures), package)
             continue
         update_baseline(state, package, files, "setup-installed")
         recorded += 1
+        print_baseline_progress(index, total, recorded, len(failures), package)
+
+    print()
 
     if recorded:
         save_state(state)
-        print(f"Recorded {recorded} installed AUR package baselines without AI scanning.")
+    skipped = len(failures)
+    print(f"Baseline complete: recorded {recorded}/{total}; skipped {skipped}.")
+    if skipped:
+        print("Skipped packages are left untrusted until a later full scan or successful install.")
+        for package, reason in failures[:MAX_BASELINE_FAILURE_SAMPLES]:
+            print(f"  {package}: {reason}")
+        remaining = skipped - MAX_BASELINE_FAILURE_SAMPLES
+        if remaining > 0:
+            print(f"  ...and {remaining} more.")
+
+
+def print_baseline_progress(index: int, total: int, recorded: int, skipped: int, package: str) -> None:
+    width = 24
+    filled = int(width * index / total) if total else width
+    bar = "#" * filled + "-" * (width - filled)
+    suffix = f" ok={recorded} skipped={skipped} current={package}"
+    print(f"\rRecording installed AUR package baselines: [{bar}] {index}/{total}{suffix}", end="", flush=True)
 
 
 def list_installed_foreign_packages() -> list[str] | None:
