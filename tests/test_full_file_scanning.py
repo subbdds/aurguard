@@ -14,6 +14,7 @@ from aurg.models import BuildFile
 from aurg.prompts import build_user_prompt
 from aurg.scanner import read_local_build_files
 from aurg.setup import run_setup
+from aurg.wrapper import classify_helper_args
 import aurg.wrapper as wrapper
 
 
@@ -148,6 +149,56 @@ def test_aur_helper_selection() -> None:
         wrapper.shutil.which = original_which
 
 
+def test_helper_arg_classification() -> None:
+    remove = classify_helper_args(["-Rns", "demo"])
+    assert not remove.scan
+
+    search = classify_helper_args(["-Ss", "demo"])
+    assert not search.scan
+
+    refresh = classify_helper_args(["-Sy"])
+    assert not refresh.scan
+
+    refresh_install = classify_helper_args(["-Sy", "demo"])
+    assert refresh_install.scan
+    assert not refresh_install.scan_updates
+    assert refresh_install.packages == ["demo"]
+
+    double_refresh = classify_helper_args(["-Syy"])
+    assert not double_refresh.scan
+
+    download_only = classify_helper_args(["-Sw", "demo"])
+    assert not download_only.scan
+
+    long_download_only = classify_helper_args(["--sync", "--downloadonly", "demo"])
+    assert not long_download_only.scan
+
+    install = classify_helper_args(["-S", "--needed", "demo"])
+    assert install.scan
+    assert not install.scan_updates
+    assert install.packages == ["demo"]
+
+    long_install = classify_helper_args(["--sync", "demo"])
+    assert long_install.scan
+    assert not long_install.scan_updates
+    assert long_install.packages == ["demo"]
+
+    update = classify_helper_args(["-Syu"])
+    assert update.scan
+    assert update.scan_updates
+    assert update.packages == []
+
+    long_update = classify_helper_args(["--sync", "--refresh", "--sysupgrade"])
+    assert long_update.scan
+    assert long_update.scan_updates
+    assert long_update.packages == []
+
+    update_with_target = classify_helper_args(["-Syu", "demo"])
+    assert update_with_target.scan
+    assert update_with_target.scan_updates
+    assert update_with_target.packages == ["demo"]
+
+
 def test_setup_writes_config_and_secrets() -> None:
     with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -210,5 +261,6 @@ if __name__ == "__main__":
     test_config_and_secrets_override_paths()
     test_config_rejects_unimplemented_provider()
     test_aur_helper_selection()
+    test_helper_arg_classification()
     test_setup_writes_config_and_secrets()
     test_default_config_path_detection()

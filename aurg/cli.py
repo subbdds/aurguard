@@ -14,7 +14,7 @@ from .config import (
 from .output import exit_code_for_verdict, print_result
 from .scanner import scan_fake_pkgbuild, scan_local_pkgbuild
 from .setup import run_setup
-from .wrapper import install_package
+from .wrapper import run_helper_command
 
 
 def run() -> int:
@@ -72,8 +72,8 @@ def main() -> int:
         print_result(result)
         return exit_code_for_verdict(result.verdict)
 
-    if args.sync_package:
-        return install_package(args.sync_package, config, args.no_ai, args.force_dangerous)
+    if args.helper_args:
+        return run_helper_command(args.helper_args, config, args.no_ai, args.force_dangerous)
 
     print("Nothing to do. Try: aurg -S package, aurg scan ./PKGBUILD, or aurg scanfake ./fake.PKGBUILD")
     return 2
@@ -100,16 +100,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-mode", choices=("full", "pkgbuild"), help="Files to scan. Default: config value.")
     parser.add_argument("--aur-helper", choices=("auto", "yay", "paru"), help="AUR helper to run. Default: config value.")
 
-    subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("setup", help="Create ~/.config/aurg/config.toml and secrets.env.")
-    scan_parser = subparsers.add_parser("scan", help="Scan a local PKGBUILD file or package folder.")
-    scan_parser.add_argument("path")
-    fake_parser = subparsers.add_parser("scanfake", help="Scan a standalone fake PKGBUILD file.")
-    fake_parser.add_argument("path")
+    args, remaining = parser.parse_known_args()
+    args.command = None
+    args.path = None
+    args.helper_args = []
 
-    parser.add_argument("-S", dest="sync_package", metavar="PACKAGE", help="Scan then install an AUR package.")
-
-    args = parser.parse_args()
-    if args.command and args.sync_package:
-        parser.error("choose either a command or -S, not both")
+    if remaining:
+        command = remaining[0]
+        if command == "setup":
+            if len(remaining) > 1:
+                parser.error("setup does not accept extra arguments")
+            args.command = "setup"
+        elif command in {"scan", "scanfake"}:
+            if len(remaining) != 2:
+                parser.error(f"{command} requires exactly one path")
+            args.command = command
+            args.path = remaining[1]
+        else:
+            args.helper_args = remaining
     return args
