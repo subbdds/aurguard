@@ -8,7 +8,10 @@ PROMPT_VERSION = "aurg-prompt-v1"
 RULES_VERSION = "aurg-rules-v1"
 GEMINI_ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 USER_AGENT = "aurg/0.1"
-MAX_PKGUILD_BYTES = 1024 * 1024
+MAX_AUR_FILE_BYTES = 1024 * 1024
+MAX_AUR_SCAN_FILES = 64
+MAX_AUR_TREE_PAGES = 64
+MAX_PKGUILD_BYTES = MAX_AUR_FILE_BYTES
 VERDICT_ORDER = {"Safe": 0, "Review": 1, "Dangerous": 2}
 
 

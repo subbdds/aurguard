@@ -3,6 +3,7 @@ from pathlib import Path
 
 from .ai_client import scan_with_ai
 from .config import PROMPT_VERSION, RULES_VERSION
+from .fetch import should_scan_build_file, sort_build_file_paths
 from .local_rules import scan_with_local_rules
 from .models import BuildFile, ScanResult
 
@@ -22,7 +23,8 @@ def scan_files(files: list[BuildFile], model: str, no_ai: bool = False) -> ScanR
 
 def scan_local_pkgbuild(path: Path, model: str, no_ai: bool = False) -> ScanResult:
     if path.is_dir():
-        path = path / "PKGBUILD"
+        files = read_local_build_files(path)
+        return scan_files(files, model, no_ai)
     if not path.is_file():
         raise SystemExit(f"PKGBUILD not found: {path}")
     return scan_files([BuildFile("PKGBUILD", read_text(path))], model, no_ai)
@@ -39,6 +41,21 @@ def read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise SystemExit(f"Could not read {path}: {exc}") from exc
+
+
+def read_local_build_files(path: Path) -> list[BuildFile]:
+    pkgbuild = path / "PKGBUILD"
+    if not pkgbuild.is_file():
+        raise SystemExit(f"PKGBUILD not found: {pkgbuild}")
+
+    paths = []
+    for candidate in path.rglob("*"):
+        if candidate.is_file():
+            relative = candidate.relative_to(path).as_posix()
+            if should_scan_build_file(relative):
+                paths.append(relative)
+
+    return [BuildFile(relative, read_text(path / relative)) for relative in sort_build_file_paths(paths)]
 
 
 def compute_cache_key(files: list[BuildFile], model: str) -> str:

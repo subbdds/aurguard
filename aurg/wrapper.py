@@ -3,20 +3,19 @@ import subprocess
 import sys
 
 from .errors import AurgError
-from .fetch import fetch_pkgbuild
-from .models import BuildFile
+from .fetch import fetch_build_files
 from .output import confirm_continue, print_result
 from .scanner import scan_files
 
 
 def install_package(package: str, model: str, no_ai: bool = False, force_dangerous: bool = False) -> int:
     try:
-        pkgbuild = fetch_pkgbuild(package)
+        files = fetch_build_files(package)
     except AurgError as exc:
         print(f"Fetch failed: {exc}", file=sys.stderr)
         return 1
 
-    result = scan_files([BuildFile("PKGBUILD", pkgbuild)], model, no_ai)
+    result = scan_files(files, model, no_ai)
     print_result(result)
 
     if result.verdict == "Dangerous" and not force_dangerous:
