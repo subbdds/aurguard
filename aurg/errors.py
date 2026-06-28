@@ -1,0 +1,2 @@
+class AurgError(Exception):
+    pass
