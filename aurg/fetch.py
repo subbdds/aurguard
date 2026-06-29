@@ -2,6 +2,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 import urllib.parse
+import urllib.error
 import urllib.request
 
 from .config import MAX_AUR_FILE_BYTES, MAX_AUR_SCAN_FILES, MAX_AUR_TREE_PAGES, USER_AGENT
@@ -122,6 +123,8 @@ def fetch_url(url: str, byte_limit: int) -> bytes:
         with urllib.request.urlopen(request, timeout=20) as response:
             status = getattr(response, "status", 200)
             body = response.read(byte_limit + 1)
+    except urllib.error.HTTPError as exc:
+        raise AurgError(f"AUR returned HTTP {exc.code}") from exc
     except OSError as exc:
         raise AurgError(str(exc)) from exc
 

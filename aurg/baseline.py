@@ -17,6 +17,7 @@ BASELINE_FILE = "packages.json"
 class BaselineCompare:
     unchanged: list[str]
     changed: list[PackageBuild]
+    skipped_unavailable: list[str]
 
 
 def default_state_dir() -> Path:
@@ -40,42 +41,64 @@ def load_baseline(path: Path | None = None) -> dict:
         return empty_manifest()
     if not isinstance(data, dict) or not isinstance(data.get("packages"), dict):
         return empty_manifest()
+    if not isinstance(data.get("unavailable", {}), dict):
+        data["unavailable"] = {}
     return data
 
 
-def write_baseline(packages: dict[str, list[BuildFile]], scan_mode: str, path: Path | None = None) -> None:
+def write_baseline(
+    packages: dict[str, list[BuildFile]],
+    scan_mode: str,
+    path: Path | None = None,
+    unavailable: dict[str, dict] | None = None,
+) -> None:
     baseline_path = path or default_baseline_path()
-    manifest = build_manifest(packages, scan_mode)
+    manifest = build_manifest(packages, scan_mode, unavailable or {})
     baseline_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = baseline_path.with_name(f"{baseline_path.name}.tmp")
     tmp_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp_path.replace(baseline_path)
 
 
-def merge_baseline(packages: dict[str, list[BuildFile]], scan_mode: str, path: Path | None = None) -> None:
+def merge_baseline(
+    packages: dict[str, list[BuildFile]],
+    scan_mode: str,
+    path: Path | None = None,
+    unavailable: dict[str, dict] | None = None,
+) -> None:
     manifest = load_baseline(path)
     stored = baseline_packages_to_files(manifest)
     stored.update(packages)
-    write_baseline(stored, scan_mode, path)
+    stored_unavailable = baseline_unavailable(manifest)
+    for package in packages:
+        stored_unavailable.pop(package, None)
+    if unavailable:
+        stored_unavailable.update(unavailable)
+    write_baseline(stored, scan_mode, path, stored_unavailable)
 
 
 def compare_to_baseline(packages: dict[str, list[BuildFile]], baseline: dict | None = None) -> BaselineCompare:
     manifest = baseline if baseline is not None else load_baseline()
     stored_packages = manifest.get("packages", {})
+    unavailable = baseline_unavailable(manifest)
     unchanged = []
     changed = []
+    skipped_unavailable = []
 
     for package, files in sorted(packages.items()):
+        if package in unavailable:
+            skipped_unavailable.append(package)
+            continue
         stored = stored_packages.get(package)
         if isinstance(stored, dict) and stored.get("files") == encode_files(files):
             unchanged.append(package)
         else:
             changed.append(PackageBuild(package, files))
 
-    return BaselineCompare(unchanged=unchanged, changed=changed)
+    return BaselineCompare(unchanged=unchanged, changed=changed, skipped_unavailable=skipped_unavailable)
 
 
-def build_manifest(packages: dict[str, list[BuildFile]], scan_mode: str) -> dict:
+def build_manifest(packages: dict[str, list[BuildFile]], scan_mode: str, unavailable: dict[str, dict] | None = None) -> dict:
     return {
         "version": BASELINE_VERSION,
         "scan_mode": scan_mode,
@@ -86,6 +109,7 @@ def build_manifest(packages: dict[str, list[BuildFile]], scan_mode: str) -> dict
             }
             for package, files in sorted(packages.items())
         },
+        "unavailable": unavailable or {},
     }
 
 
@@ -95,6 +119,7 @@ def empty_manifest() -> dict:
         "scan_mode": "",
         "updated_at": "",
         "packages": {},
+        "unavailable": {},
     }
 
 
@@ -129,6 +154,44 @@ def baseline_packages_to_files(manifest: dict) -> dict[str, list[BuildFile]]:
         if files:
             packages[package] = files
     return packages
+
+
+def baseline_unavailable(manifest: dict | None = None) -> dict[str, dict]:
+    data = manifest if manifest is not None else load_baseline()
+    unavailable = data.get("unavailable", {})
+    if not isinstance(unavailable, dict):
+        return {}
+    clean: dict[str, dict] = {}
+    for package, item in unavailable.items():
+        if isinstance(package, str) and isinstance(item, dict):
+            clean[package] = item
+    return clean
+
+
+def unavailable_packages(manifest: dict | None = None) -> set[str]:
+    return set(baseline_unavailable(manifest))
+
+
+def unavailable_from_failures(failures: dict[str, str]) -> dict[str, dict]:
+    unavailable = {}
+    for package, reason in failures.items():
+        status = unavailable_status(reason)
+        if status is None:
+            continue
+        unavailable[package] = {
+            "status": status,
+            "reason": reason,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return unavailable
+
+
+def unavailable_status(reason: str) -> int | None:
+    if "HTTP 404" in reason:
+        return 404
+    if "HTTP 429" in reason:
+        return 429
+    return None
 
 
 def file_hash(file: BuildFile) -> str:

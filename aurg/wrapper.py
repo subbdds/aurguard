@@ -3,7 +3,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from .baseline import compare_to_baseline, merge_baseline
+from .baseline import compare_to_baseline, merge_baseline, unavailable_from_failures, unavailable_packages
 from .config import Config
 from .errors import AurgError
 from .fetch import fetch_build_files
@@ -84,12 +84,15 @@ def run_scanned_helper_command(
         if scan_updates and fetched_updates:
             baseline_updates.update(fetched_updates)
         if packages_to_scan:
-            fetched_installs, failures = fetch_packages(packages_to_scan, config.scan_mode)
+            fetched_installs, failures = fetch_packages(packages_to_scan, config.scan_mode, "Updating install baseline")
             baseline_updates.update(fetched_installs)
+            unavailable = unavailable_from_failures(failures)
             for package, reason in failures.items():
                 print(f"Baseline not updated for {package}: {reason}", file=sys.stderr)
         if baseline_updates:
-            merge_baseline(baseline_updates, config.scan_mode)
+            merge_baseline(baseline_updates, config.scan_mode, unavailable=unavailable if packages_to_scan else None)
+        elif packages_to_scan and unavailable:
+            merge_baseline({}, config.scan_mode, unavailable=unavailable)
     return return_code
 
 
@@ -123,9 +126,20 @@ def scan_full_system_update(config: Config, no_ai: bool = False, force_dangerous
     if not packages:
         return {}
 
-    fetched, failures = fetch_packages(packages, config.scan_mode)
+    unavailable = unavailable_packages()
+    skipped_unavailable = sorted(unavailable.intersection(packages))
+    packages_to_fetch = [package for package in packages if package not in unavailable]
+    if skipped_unavailable:
+        print(f"AUR update scan: skipping {len(skipped_unavailable)} previously unavailable package(s).")
+
+    fetched, failures = fetch_packages(packages_to_fetch, config.scan_mode, "Checking AUR update baseline")
     for package, reason in failures.items():
         print(f"Fetch failed for {package}: {reason}", file=sys.stderr)
+
+    unavailable_failures = unavailable_from_failures(failures)
+    if unavailable_failures:
+        merge_baseline({}, config.scan_mode, unavailable=unavailable_failures)
+        failures = {package: reason for package, reason in failures.items() if package not in unavailable_failures}
 
     comparison = compare_to_baseline(fetched)
     if failures:

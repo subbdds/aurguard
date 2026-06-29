@@ -9,7 +9,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from aurg.config import Config, ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
-from aurg.baseline import compare_to_baseline, load_baseline, write_baseline
+from aurg.baseline import compare_to_baseline, load_baseline, merge_baseline, unavailable_from_failures, write_baseline
 from aurg.fetch import CgitTreeParser, should_scan_build_file
 from aurg.ai_client import validate_batch_ai_result
 from aurg.models import BuildFile, PackageBuild, PackageScanResult, ScanResult
@@ -243,6 +243,24 @@ def test_baseline_round_trip_and_compare() -> None:
     assert [package.name for package in missing.changed] == ["new"]
 
 
+def test_baseline_marks_404_and_429_unavailable() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "packages.json"
+        unavailable = unavailable_from_failures(
+            {
+                "missing": "AUR returned HTTP 404",
+                "limited": "AUR returned HTTP 429",
+                "transient": "timed out",
+            }
+        )
+        merge_baseline({}, "full", path, unavailable)
+        baseline = load_baseline(path)
+
+    assert sorted(baseline["unavailable"]) == ["limited", "missing"]
+    assert baseline["unavailable"]["missing"]["status"] == 404
+    assert baseline["unavailable"]["limited"]["status"] == 429
+
+
 def test_split_evenly_limits_group_count() -> None:
     packages = [PackageBuild(str(index), [BuildFile("PKGBUILD", "")]) for index in range(10)]
 
@@ -292,7 +310,7 @@ def test_full_update_scans_only_changed_baseline_packages() -> None:
 
         try:
             wrapper.list_foreign_packages = lambda: ["same", "changed"]
-            wrapper.fetch_packages = lambda packages, scan_mode: (fetched, {})
+            wrapper.fetch_packages = lambda packages, scan_mode, label="": (fetched, {})
 
             def fake_scan_package_groups(packages, config, no_ai=False):
                 scanned.extend(package.name for package in packages)
@@ -314,6 +332,38 @@ def test_full_update_scans_only_changed_baseline_packages() -> None:
 
     assert result == fetched
     assert scanned == ["changed"]
+
+
+def test_full_update_skips_previously_unavailable_packages() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        os.environ["XDG_STATE_HOME"] = str(root / "state")
+        merge_baseline({}, "full", unavailable={"missing": {"status": 404, "reason": "AUR returned HTTP 404"}})
+        requested = []
+        original_list_foreign = wrapper.list_foreign_packages
+        original_fetch_packages = wrapper.fetch_packages
+        original_scan_package_groups = wrapper.scan_package_groups
+
+        try:
+            wrapper.list_foreign_packages = lambda: ["missing", "same"]
+
+            def fake_fetch_packages(packages, scan_mode, label=""):
+                requested.extend(packages)
+                return {"same": [BuildFile("PKGBUILD", "pkgname=same\n")]}, {}
+
+            wrapper.fetch_packages = fake_fetch_packages
+            wrapper.scan_package_groups = lambda packages, config, no_ai=False: [
+                PackageScanResult(package.name, ScanResult("Safe", [], "Clean.", "ai", "")) for package in packages
+            ]
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = scan_full_system_update(Config(), no_ai=False)
+        finally:
+            wrapper.list_foreign_packages = original_list_foreign
+            wrapper.fetch_packages = original_fetch_packages
+            wrapper.scan_package_groups = original_scan_package_groups
+
+    assert requested == ["same"]
+    assert result == {"same": [BuildFile("PKGBUILD", "pkgname=same\n")]}
 
 
 def test_setup_writes_config_and_secrets() -> None:
@@ -349,7 +399,7 @@ def test_setup_seeds_baseline_with_mocked_packages() -> None:
 
         try:
             setup.list_foreign_packages = lambda: ["demo", "stale"]
-            setup.fetch_packages = lambda packages, scan_mode: (
+            setup.fetch_packages = lambda packages, scan_mode, label="": (
                 {"demo": [BuildFile("PKGBUILD", "pkgname=demo\n")]},
                 {"stale": "not found"},
             )
@@ -414,9 +464,11 @@ if __name__ == "__main__":
     test_aur_helper_selection()
     test_helper_arg_classification()
     test_baseline_round_trip_and_compare()
+    test_baseline_marks_404_and_429_unavailable()
     test_split_evenly_limits_group_count()
     test_batch_ai_response_validation()
     test_full_update_scans_only_changed_baseline_packages()
+    test_full_update_skips_previously_unavailable_packages()
     test_setup_writes_config_and_secrets()
     test_setup_seeds_baseline_with_mocked_packages()
     test_default_config_path_detection()

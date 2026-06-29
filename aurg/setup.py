@@ -2,7 +2,7 @@ from collections.abc import Callable
 import shutil
 import sys
 
-from .baseline import default_baseline_path, write_baseline
+from .baseline import default_baseline_path, merge_baseline, unavailable_from_failures, unavailable_packages
 from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, write_config_file, write_secrets_file
 from .packages import fetch_packages, list_foreign_packages
 
@@ -58,15 +58,18 @@ def seed_update_baseline(config: Config) -> None:
         print("No installed foreign packages found; skipped update baseline.")
         return
 
-    fetched, failures = fetch_packages(packages, config.scan_mode)
-    if fetched:
-        write_baseline(fetched, config.scan_mode)
+    skipped = sorted(unavailable_packages().intersection(packages))
+    packages_to_fetch = [package for package in packages if package not in set(skipped)]
+    fetched, failures = fetch_packages(packages_to_fetch, config.scan_mode, "Establishing update baseline")
+    unavailable = unavailable_from_failures(failures)
+    if fetched or unavailable:
+        merge_baseline(fetched, config.scan_mode, unavailable=unavailable)
     for package, reason in failures.items():
         print(f"Baseline skipped {package}: {reason}", file=sys.stderr)
 
     print(
         f"Wrote update baseline: {default_baseline_path()} "
-        f"({len(packages)} detected, {len(fetched)} recorded, {len(failures)} skipped)"
+        f"({len(packages)} detected, {len(fetched)} recorded, {len(skipped) + len(failures)} skipped)"
     )
 
 

@@ -4,6 +4,7 @@ import subprocess
 from .errors import AurgError
 from .fetch import fetch_build_files
 from .models import BuildFile
+from .progress import Progress
 
 
 MAX_FETCH_WORKERS = 8
@@ -19,7 +20,7 @@ def list_foreign_packages() -> list[str] | None:
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
-def fetch_packages(packages: list[str], scan_mode: str) -> tuple[dict[str, list[BuildFile]], dict[str, str]]:
+def fetch_packages(packages: list[str], scan_mode: str, label: str = "Fetching AUR build files") -> tuple[dict[str, list[BuildFile]], dict[str, str]]:
     fetched: dict[str, list[BuildFile]] = {}
     failures: dict[str, str] = {}
     unique_packages = unique_preserving_order(packages)
@@ -27,14 +28,17 @@ def fetch_packages(packages: list[str], scan_mode: str) -> tuple[dict[str, list[
         return fetched, failures
 
     workers = min(MAX_FETCH_WORKERS, len(unique_packages))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(fetch_build_files, package, scan_mode): package for package in unique_packages}
-        for future in as_completed(futures):
-            package = futures[future]
-            try:
-                fetched[package] = future.result()
-            except AurgError as exc:
-                failures[package] = str(exc)
+    with Progress(label, len(unique_packages)) as progress:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(fetch_build_files, package, scan_mode): package for package in unique_packages}
+            for future in as_completed(futures):
+                package = futures[future]
+                try:
+                    fetched[package] = future.result()
+                except AurgError as exc:
+                    failures[package] = str(exc)
+                finally:
+                    progress.advance()
 
     return dict(sorted(fetched.items())), dict(sorted(failures.items()))
 

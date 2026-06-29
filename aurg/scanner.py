@@ -7,6 +7,7 @@ from .config import Config, PROMPT_VERSION, RULES_VERSION
 from .fetch import should_scan_build_file, sort_build_file_paths
 from .local_rules import scan_with_local_rules
 from .models import BuildFile, PackageBuild, PackageScanResult, ScanResult
+from .progress import Progress
 
 
 def scan_files(files: list[BuildFile], config: Config, no_ai: bool = False) -> ScanResult:
@@ -28,11 +29,13 @@ def scan_package_groups(packages: list[PackageBuild], config: Config, no_ai: boo
         return []
 
     results_by_package: dict[str, PackageScanResult] = {}
-    with ThreadPoolExecutor(max_workers=len(groups)) as executor:
-        futures = [executor.submit(scan_package_group, group, config, no_ai) for group in groups]
-        for future in as_completed(futures):
-            for result in future.result():
-                results_by_package[result.package] = result
+    with Progress("Scanning package groups with AI", len(groups)) as progress:
+        with ThreadPoolExecutor(max_workers=len(groups)) as executor:
+            futures = [executor.submit(scan_package_group, group, config, no_ai) for group in groups]
+            for future in as_completed(futures):
+                for result in future.result():
+                    results_by_package[result.package] = result
+                progress.advance()
 
     return [results_by_package[package.name] for package in packages if package.name in results_by_package]
 
