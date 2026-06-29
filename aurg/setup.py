@@ -1,9 +1,10 @@
 from collections.abc import Callable
+from collections import defaultdict
 import shutil
 import sys
 
 from .baseline import default_baseline_path, merge_baseline, unavailable_from_failures, unavailable_packages
-from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, write_config_file, write_secrets_file
+from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, resolve_api_key, write_config_file, write_secrets_file
 from .packages import fetch_packages, list_foreign_packages
 
 
@@ -26,7 +27,8 @@ def run_setup(
     aur_helper = choose_aur_helper(input_func)
     scan_mode = choose_scan_mode(input_func)
     provider = choose_provider(input_func)
-    api_key = ask_api_key(provider, input_func)
+    existing_api_key = resolve_api_key(provider, paths.secrets)
+    api_key = ask_api_key(provider, input_func, existing_api_key)
     model = choose_model(provider, input_func)
 
     config = Config(
@@ -45,32 +47,32 @@ def run_setup(
 
     print(f"Wrote config: {paths.config}")
     print(f"Wrote secrets: {paths.secrets}")
-    seed_update_baseline(config)
+    rescan_update_baseline(config)
     return config
 
 
-def seed_update_baseline(config: Config) -> None:
+def rescan_update_baseline(config: Config, skip_unavailable: bool = False) -> bool:
     packages = list_foreign_packages()
     if packages is None:
         print("Could not list installed foreign packages; skipped update baseline.", file=sys.stderr)
-        return
+        return False
     if not packages:
         print("No installed foreign packages found; skipped update baseline.")
-        return
+        return True
 
-    skipped = sorted(unavailable_packages().intersection(packages))
+    skipped = sorted(unavailable_packages().intersection(packages)) if skip_unavailable else []
     packages_to_fetch = [package for package in packages if package not in set(skipped)]
     fetched, failures = fetch_packages(packages_to_fetch, config.scan_mode, "Establishing update baseline")
     unavailable = unavailable_from_failures(failures)
     if fetched or unavailable:
         merge_baseline(fetched, config.scan_mode, unavailable=unavailable)
-    for package, reason in failures.items():
-        print(f"Baseline skipped {package}: {reason}", file=sys.stderr)
+    print_failure_summary("Baseline skipped", failures)
 
     print(
         f"Wrote update baseline: {default_baseline_path()} "
         f"({len(packages)} detected, {len(fetched)} recorded, {len(skipped) + len(failures)} skipped)"
     )
+    return True
 
 
 def choose_aur_helper(input_func: InputFunc) -> str:
@@ -117,8 +119,9 @@ def choose_provider(input_func: InputFunc) -> str:
     return provider
 
 
-def ask_api_key(provider: str, input_func: InputFunc) -> str:
-    prompt = "Enter Google API key: " if provider == "google" else f"Enter {provider} API key: "
+def ask_api_key(provider: str, input_func: InputFunc, existing_api_key: str | None = None) -> str:
+    base_prompt = "Enter Google API key" if provider == "google" else f"Enter {provider} API key"
+    prompt = f"{base_prompt} [keep existing]: " if existing_api_key else f"{base_prompt}: "
     while True:
         try:
             api_key = input_func(prompt).strip()
@@ -126,6 +129,8 @@ def ask_api_key(provider: str, input_func: InputFunc) -> str:
             raise ConfigError("Setup cancelled: API key input was not available") from exc
         if api_key:
             return api_key
+        if existing_api_key:
+            return existing_api_key
         print("API key is required.")
 
 
@@ -161,3 +166,16 @@ def choose(input_func: InputFunc, title: str, options: list[tuple[str, str]], de
         if selected:
             return selected
         print(f"Choose one of: {', '.join(valid)}")
+
+
+def print_failure_summary(prefix: str, failures: dict[str, str]) -> None:
+    if not failures:
+        return
+    by_reason: dict[str, list[str]] = defaultdict(list)
+    for package, reason in failures.items():
+        by_reason[reason].append(package)
+
+    for reason, packages in sorted(by_reason.items(), key=lambda item: (-len(item[1]), item[0])):
+        shown = ", ".join(packages[:6])
+        extra = f", +{len(packages) - 6} more" if len(packages) > 6 else ""
+        print(f"{prefix} {len(packages)} package(s): {reason} ({shown}{extra})", file=sys.stderr)

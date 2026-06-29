@@ -16,6 +16,7 @@ from aurg.models import BuildFile, PackageBuild, PackageScanResult, ScanResult
 from aurg.prompts import build_batch_user_prompt, build_user_prompt
 from aurg.scanner import read_local_build_files, split_evenly
 from aurg.setup import run_setup
+from aurg.cli import parse_args
 from aurg.wrapper import classify_helper_args, scan_full_system_update
 import aurg.setup as setup
 import aurg.wrapper as wrapper
@@ -226,6 +227,17 @@ def test_helper_arg_classification() -> None:
     assert update_with_target.packages == ["demo"]
 
 
+def test_parse_rescan_command() -> None:
+    original_argv = sys.argv
+    try:
+        sys.argv = ["aurg", "rescan"]
+        args = parse_args()
+    finally:
+        sys.argv = original_argv
+
+    assert args.command == "rescan"
+
+
 def test_baseline_round_trip_and_compare() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "packages.json"
@@ -388,6 +400,25 @@ def test_setup_writes_config_and_secrets() -> None:
     assert config.api_key == "setup-secret"
 
 
+def test_setup_keeps_existing_api_key_when_empty() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        paths = ConfigPaths(root / "config.toml", root / "secrets.env")
+        paths.secrets.write_text('GEMINI_API_KEY="existing-secret"\n', encoding="utf-8")
+        answers = iter(["", "", "", "", ""])
+        original_list_foreign = setup.list_foreign_packages
+
+        try:
+            setup.list_foreign_packages = lambda: []
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+            config = load_config(paths.config, paths.secrets)
+        finally:
+            setup.list_foreign_packages = original_list_foreign
+
+    assert config.api_key == "existing-secret"
+
+
 def test_setup_seeds_baseline_with_mocked_packages() -> None:
     with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -463,6 +494,7 @@ if __name__ == "__main__":
     test_config_rejects_unimplemented_provider()
     test_aur_helper_selection()
     test_helper_arg_classification()
+    test_parse_rescan_command()
     test_baseline_round_trip_and_compare()
     test_baseline_marks_404_and_429_unavailable()
     test_split_evenly_limits_group_count()
@@ -470,5 +502,6 @@ if __name__ == "__main__":
     test_full_update_scans_only_changed_baseline_packages()
     test_full_update_skips_previously_unavailable_packages()
     test_setup_writes_config_and_secrets()
+    test_setup_keeps_existing_api_key_when_empty()
     test_setup_seeds_baseline_with_mocked_packages()
     test_default_config_path_detection()

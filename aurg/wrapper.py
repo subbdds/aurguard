@@ -11,6 +11,7 @@ from .models import BuildFile
 from .output import confirm_continue, confirm_update_continue, print_package_result, print_result
 from .packages import fetch_packages, list_foreign_packages, unique_preserving_order
 from .scanner import scan_files, scan_package_groups
+from .setup import print_failure_summary
 
 
 NO_INSTALL_SYNC_SHORT_FLAGS = set("silgcw")
@@ -87,8 +88,7 @@ def run_scanned_helper_command(
             fetched_installs, failures = fetch_packages(packages_to_scan, config.scan_mode, "Updating install baseline")
             baseline_updates.update(fetched_installs)
             unavailable = unavailable_from_failures(failures)
-            for package, reason in failures.items():
-                print(f"Baseline not updated for {package}: {reason}", file=sys.stderr)
+            print_failure_summary("Baseline not updated for", failures)
         if baseline_updates:
             merge_baseline(baseline_updates, config.scan_mode, unavailable=unavailable if packages_to_scan else None)
         elif packages_to_scan and unavailable:
@@ -133,8 +133,7 @@ def scan_full_system_update(config: Config, no_ai: bool = False, force_dangerous
         print(f"AUR update scan: skipping {len(skipped_unavailable)} previously unavailable package(s).")
 
     fetched, failures = fetch_packages(packages_to_fetch, config.scan_mode, "Checking AUR update baseline")
-    for package, reason in failures.items():
-        print(f"Fetch failed for {package}: {reason}", file=sys.stderr)
+    print_failure_summary("Fetch failed for", failures)
 
     unavailable_failures = unavailable_from_failures(failures)
     if unavailable_failures:

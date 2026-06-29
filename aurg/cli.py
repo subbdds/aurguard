@@ -13,7 +13,7 @@ from .config import (
 )
 from .output import exit_code_for_verdict, print_result
 from .scanner import scan_fake_pkgbuild, scan_local_pkgbuild
-from .setup import run_setup
+from .setup import rescan_update_baseline, run_setup
 from .wrapper import run_helper_command
 
 
@@ -72,10 +72,15 @@ def main() -> int:
         print_result(result)
         return exit_code_for_verdict(result.verdict)
 
+    if args.command == "rescan":
+        return 0 if rescan_update_baseline(config) else 1
+
     if args.helper_args:
         return run_helper_command(args.helper_args, config, args.no_ai, args.force_dangerous)
 
-    print("Nothing to do. Try: aurg -S package, aurg scan ./PKGBUILD, or aurg scanfake ./fake.PKGBUILD")
+    print("Nothing to do. For setup run: aurg setup" \
+    "\n> use as you would your AUR helper with arguments like -S, -Syu" \
+    "\n> to rescan installed packages: aurg rescan")
     return 2
 
 
@@ -111,6 +116,10 @@ def parse_args() -> argparse.Namespace:
             if len(remaining) > 1:
                 parser.error("setup does not accept extra arguments")
             args.command = "setup"
+        elif command == "rescan":
+            if len(remaining) > 1:
+                parser.error("rescan does not accept extra arguments")
+            args.command = "rescan"
         elif command in {"scan", "scanfake"}:
             if len(remaining) != 2:
                 parser.error(f"{command} requires exactly one path")
