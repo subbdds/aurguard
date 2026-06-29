@@ -9,6 +9,7 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_PROVIDER = "google"
 DEFAULT_AUR_HELPER = "auto"
 DEFAULT_SCAN_MODE = "full"
+DEFAULT_MAX_UPDATE_REQUESTS = 4
 PROMPT_VERSION = "aurg-prompt-v2"
 RULES_VERSION = "aurg-rules-v1"
 GEMINI_ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -41,6 +42,7 @@ class Config:
     provider: str = DEFAULT_PROVIDER
     model: str = DEFAULT_MODEL
     require_ai: bool = True
+    max_update_requests: int = DEFAULT_MAX_UPDATE_REQUESTS
     api_key: str | None = None
     config_path: Path | None = None
     secrets_path: Path | None = None
@@ -103,6 +105,7 @@ def load_config(
         provider=read_string(data, "provider", DEFAULT_PROVIDER),
         model=read_string(data, "model", DEFAULT_MODEL),
         require_ai=read_bool(data, "require_ai", True),
+        max_update_requests=read_int(data, "max_update_requests", DEFAULT_MAX_UPDATE_REQUESTS),
         config_path=paths.config,
         secrets_path=paths.secrets,
     )
@@ -145,6 +148,13 @@ def read_bool(data: dict, key: str, default: bool) -> bool:
     return value
 
 
+def read_int(data: dict, key: str, default: int) -> int:
+    value = data.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(f"Invalid config value {key}: expected an integer")
+    return value
+
+
 def apply_env_overrides(config: Config) -> None:
     config.aur_helper = os.environ.get("AURG_AUR_HELPER", config.aur_helper)
     config.scan_mode = os.environ.get("AURG_SCAN_MODE", config.scan_mode)
@@ -153,6 +163,9 @@ def apply_env_overrides(config: Config) -> None:
     require_ai = os.environ.get("AURG_REQUIRE_AI")
     if require_ai is not None:
         config.require_ai = parse_env_bool("AURG_REQUIRE_AI", require_ai)
+    max_update_requests = os.environ.get("AURG_MAX_UPDATE_REQUESTS")
+    if max_update_requests is not None:
+        config.max_update_requests = parse_env_int("AURG_MAX_UPDATE_REQUESTS", max_update_requests)
 
 
 def apply_cli_overrides(config: Config, overrides: ConfigOverrides) -> None:
@@ -173,6 +186,13 @@ def parse_env_bool(name: str, value: str) -> bool:
     raise ConfigError(f"Invalid environment value {name}: expected true or false")
 
 
+def parse_env_int(name: str, value: str) -> int:
+    try:
+        return int(value.strip())
+    except ValueError as exc:
+        raise ConfigError(f"Invalid environment value {name}: expected an integer") from exc
+
+
 def validate_config(config: Config) -> None:
     if config.aur_helper not in VALID_AUR_HELPERS:
         raise ConfigError(f"Invalid aur_helper: {config.aur_helper}. Expected one of: {', '.join(sorted(VALID_AUR_HELPERS))}")
@@ -184,6 +204,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError(f"Provider not implemented yet: {config.provider}. Only google is supported in this version.")
     if not config.model:
         raise ConfigError("Invalid model: expected a non-empty model name")
+    if config.max_update_requests < 1:
+        raise ConfigError("Invalid max_update_requests: expected an integer greater than or equal to 1")
 
 
 def resolve_api_key(provider: str, secrets_path: Path) -> str | None:
@@ -247,6 +269,7 @@ def format_config(config: Config) -> str:
             f'provider = "{config.provider}"',
             f'model = "{config.model}"',
             f"require_ai = {require_ai}",
+            f"max_update_requests = {config.max_update_requests}",
             "",
         ]
     )

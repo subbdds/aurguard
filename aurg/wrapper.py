@@ -3,11 +3,14 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from .baseline import compare_to_baseline, merge_baseline
 from .config import Config
 from .errors import AurgError
 from .fetch import fetch_build_files
-from .output import confirm_continue, print_result
-from .scanner import scan_files
+from .models import BuildFile
+from .output import confirm_continue, confirm_update_continue, print_package_result, print_result
+from .packages import fetch_packages, list_foreign_packages, unique_preserving_order
+from .scanner import scan_files, scan_package_groups
 
 
 NO_INSTALL_SYNC_SHORT_FLAGS = set("silgcw")
@@ -68,16 +71,26 @@ def run_scanned_helper_command(
 
     packages_to_scan = unique_preserving_order(packages)
     if scan_updates:
-        updates = list_aur_updates(helper)
-        if updates is None:
-            print("Could not list AUR updates for scanning.", file=sys.stderr)
+        fetched_updates = scan_full_system_update(config, no_ai, force_dangerous)
+        if fetched_updates is None:
             return 1
-        packages_to_scan = unique_preserving_order([*packages_to_scan, *updates])
 
     if packages_to_scan and not scan_packages(packages_to_scan, config, no_ai, force_dangerous):
         return 1
 
-    return run_helper(args, config, helper)
+    return_code = run_helper(args, config, helper)
+    if return_code == 0:
+        baseline_updates: dict[str, list[BuildFile]] = {}
+        if scan_updates and fetched_updates:
+            baseline_updates.update(fetched_updates)
+        if packages_to_scan:
+            fetched_installs, failures = fetch_packages(packages_to_scan, config.scan_mode)
+            baseline_updates.update(fetched_installs)
+            for package, reason in failures.items():
+                print(f"Baseline not updated for {package}: {reason}", file=sys.stderr)
+        if baseline_updates:
+            merge_baseline(baseline_updates, config.scan_mode)
+    return return_code
 
 
 def scan_packages(packages: list[str], config: Config, no_ai: bool = False, force_dangerous: bool = False) -> bool:
@@ -102,6 +115,49 @@ def scan_packages(packages: list[str], config: Config, no_ai: bool = False, forc
     return True
 
 
+def scan_full_system_update(config: Config, no_ai: bool = False, force_dangerous: bool = False) -> dict[str, list[BuildFile]] | None:
+    packages = list_foreign_packages()
+    if packages is None:
+        print("Could not list installed foreign packages for update scanning.", file=sys.stderr)
+        return None
+    if not packages:
+        return {}
+
+    fetched, failures = fetch_packages(packages, config.scan_mode)
+    for package, reason in failures.items():
+        print(f"Fetch failed for {package}: {reason}", file=sys.stderr)
+
+    comparison = compare_to_baseline(fetched)
+    if failures:
+        print("Could not fetch all installed AUR packages for update scanning.", file=sys.stderr)
+        return None
+    if not comparison.changed:
+        print("AUR update scan: all installed package build files match baseline.")
+        return fetched
+
+    print(
+        f"AUR update scan: {len(comparison.changed)} package(s) changed or missing from baseline; "
+        f"{len(comparison.unchanged)} unchanged."
+    )
+    results = scan_package_groups(comparison.changed, config, no_ai)
+    flagged = [result for result in results if result.result.verdict != "Safe"]
+    for result in flagged:
+        print_package_result(result)
+
+    dangerous = [result for result in results if result.result.verdict == "Dangerous"]
+    if dangerous and not force_dangerous:
+        names = ", ".join(result.package for result in dangerous)
+        print(f"Installation blocked: Dangerous update package(s): {names}")
+        return None
+
+    reviews = [result for result in results if result.result.verdict == "Review"]
+    if reviews and not confirm_update_continue(len(reviews)):
+        print("Installation cancelled.")
+        return None
+
+    return fetched
+
+
 def run_helper(args: list[str], config: Config, helper: str | None = None) -> int:
     helper = helper or find_aur_helper(config.aur_helper)
     if not helper:
@@ -111,20 +167,6 @@ def run_helper(args: list[str], config: Config, helper: str | None = None) -> in
     print(f"Running: {' '.join([helper, *args])}")
     completed = subprocess.run([helper, *args], check=False)
     return completed.returncode
-
-
-def list_aur_updates(helper: str) -> list[str] | None:
-    completed = subprocess.run([helper, "-Qua"], check=False, capture_output=True, text=True)
-    if completed.returncode not in {0, 1}:
-        return None
-
-    packages = []
-    for line in completed.stdout.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        packages.append(stripped.split()[0])
-    return packages
 
 
 def classify_helper_args(args: list[str]) -> HelperAction:
@@ -191,17 +233,6 @@ def collect_sync_targets(args: list[str]) -> list[str]:
             targets.append(arg)
 
     return targets
-
-
-def unique_preserving_order(values: list[str]) -> list[str]:
-    seen = set()
-    unique = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        unique.append(value)
-    return unique
 
 
 def print_missing_helper(config: Config) -> None:

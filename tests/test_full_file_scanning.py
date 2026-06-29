@@ -8,13 +8,16 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aurg.config import ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
+from aurg.config import Config, ConfigError, ConfigOverrides, ConfigPaths, load_config, uses_default_config_paths
+from aurg.baseline import compare_to_baseline, load_baseline, write_baseline
 from aurg.fetch import CgitTreeParser, should_scan_build_file
-from aurg.models import BuildFile
-from aurg.prompts import build_user_prompt
-from aurg.scanner import read_local_build_files
+from aurg.ai_client import validate_batch_ai_result
+from aurg.models import BuildFile, PackageBuild, PackageScanResult, ScanResult
+from aurg.prompts import build_batch_user_prompt, build_user_prompt
+from aurg.scanner import read_local_build_files, split_evenly
 from aurg.setup import run_setup
-from aurg.wrapper import classify_helper_args
+from aurg.wrapper import classify_helper_args, scan_full_system_update
+import aurg.setup as setup
 import aurg.wrapper as wrapper
 
 
@@ -65,6 +68,19 @@ def test_prompt_contains_multiple_files() -> None:
     assert "FILE: PKGBUILD\n1: pkgname=demo" in prompt
     assert "FILE: demo.install\n1: post_install() {" in prompt
     assert "2:   true" in prompt
+
+
+def test_batch_prompt_contains_package_boundaries() -> None:
+    prompt = build_batch_user_prompt(
+        [
+            PackageBuild("alpha", [BuildFile("PKGBUILD", "pkgname=alpha")]),
+            PackageBuild("beta", [BuildFile("PKGBUILD", "pkgname=beta")]),
+        ]
+    )
+
+    assert "PACKAGE: alpha" in prompt
+    assert "FILE: PKGBUILD\n1: pkgname=alpha" in prompt
+    assert "PACKAGE: beta" in prompt
 
 
 def test_local_build_file_collection() -> None:
@@ -122,6 +138,17 @@ require_ai = true
     assert config.provider == "google"
     assert config.model == "gemini-cli"
     assert config.api_key == "secret-value"
+
+
+def test_config_reads_max_update_requests() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        config_path = Path(temp_dir) / "config.toml"
+        config_path.write_text("max_update_requests = 6\n", encoding="utf-8")
+        os.environ["AURG_MAX_UPDATE_REQUESTS"] = "3"
+
+        config = load_config(config_path, Path(temp_dir) / "secrets.env")
+
+    assert config.max_update_requests == 3
 
 
 def test_config_rejects_unimplemented_provider() -> None:
@@ -199,21 +226,141 @@ def test_helper_arg_classification() -> None:
     assert update_with_target.packages == ["demo"]
 
 
+def test_baseline_round_trip_and_compare() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "packages.json"
+        files = {"demo": [BuildFile("PKGBUILD", "pkgname=demo\n")]}
+        write_baseline(files, "full", path)
+
+        baseline = load_baseline(path)
+        same = compare_to_baseline(files, baseline)
+        changed = compare_to_baseline({"demo": [BuildFile("PKGBUILD", "pkgname=demo\npkgver=2\n")]}, baseline)
+        missing = compare_to_baseline({"new": [BuildFile("PKGBUILD", "pkgname=new\n")]}, baseline)
+
+    assert same.unchanged == ["demo"]
+    assert same.changed == []
+    assert [package.name for package in changed.changed] == ["demo"]
+    assert [package.name for package in missing.changed] == ["new"]
+
+
+def test_split_evenly_limits_group_count() -> None:
+    packages = [PackageBuild(str(index), [BuildFile("PKGBUILD", "")]) for index in range(10)]
+
+    groups = split_evenly(packages, 4)
+
+    assert [len(group) for group in groups] == [3, 3, 2, 2]
+
+
+def test_batch_ai_response_validation() -> None:
+    packages = [
+        PackageBuild("demo", [BuildFile("PKGBUILD", "pkgname=demo\ncurl https://example.test\n")]),
+        PackageBuild("safe", [BuildFile("PKGBUILD", "pkgname=safe\n")]),
+    ]
+
+    results = validate_batch_ai_result(
+        {
+            "results": [
+                {
+                    "package": "demo",
+                    "verdict": "Review",
+                    "summary": "Network use.",
+                    "findings": [{"file": "PKGBUILD", "line": 2, "severity": "Review", "reason": "Downloads content."}],
+                },
+                {"package": "safe", "verdict": "Safe", "summary": "Clean.", "findings": []},
+            ]
+        },
+        packages,
+    )
+
+    assert [result.package for result in results] == ["demo", "safe"]
+    assert results[0].result.findings[0].text == "curl https://example.test"
+
+
+def test_full_update_scans_only_changed_baseline_packages() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        os.environ["XDG_STATE_HOME"] = str(root / "state")
+        write_baseline({"same": [BuildFile("PKGBUILD", "pkgname=same\n")]}, "full")
+        fetched = {
+            "same": [BuildFile("PKGBUILD", "pkgname=same\n")],
+            "changed": [BuildFile("PKGBUILD", "pkgname=changed\n")],
+        }
+        scanned = []
+        original_list_foreign = wrapper.list_foreign_packages
+        original_fetch_packages = wrapper.fetch_packages
+        original_scan_package_groups = wrapper.scan_package_groups
+
+        try:
+            wrapper.list_foreign_packages = lambda: ["same", "changed"]
+            wrapper.fetch_packages = lambda packages, scan_mode: (fetched, {})
+
+            def fake_scan_package_groups(packages, config, no_ai=False):
+                scanned.extend(package.name for package in packages)
+                return [
+                    PackageScanResult(
+                        package.name,
+                        ScanResult("Safe", [], "Clean.", "ai", ""),
+                    )
+                    for package in packages
+                ]
+
+            wrapper.scan_package_groups = fake_scan_package_groups
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = scan_full_system_update(Config(), no_ai=False)
+        finally:
+            wrapper.list_foreign_packages = original_list_foreign
+            wrapper.fetch_packages = original_fetch_packages
+            wrapper.scan_package_groups = original_scan_package_groups
+
+    assert result == fetched
+    assert scanned == ["changed"]
+
+
 def test_setup_writes_config_and_secrets() -> None:
     with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         paths = ConfigPaths(root / "config.toml", root / "secrets.env")
         answers = iter(["", "", "", "setup-secret", "gemini-custom"])
+        original_list_foreign = setup.list_foreign_packages
 
-        with contextlib.redirect_stdout(io.StringIO()):
-            run_setup(paths, input_func=lambda prompt: next(answers))
-        config = load_config(paths.config, paths.secrets)
+        try:
+            setup.list_foreign_packages = lambda: []
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+            config = load_config(paths.config, paths.secrets)
+        finally:
+            setup.list_foreign_packages = original_list_foreign
 
     assert config.aur_helper == "auto"
     assert config.scan_mode == "full"
     assert config.provider == "google"
     assert config.model == "gemini-custom"
     assert config.api_key == "setup-secret"
+
+
+def test_setup_seeds_baseline_with_mocked_packages() -> None:
+    with clean_config_env(), tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        os.environ["XDG_STATE_HOME"] = str(root / "state")
+        paths = ConfigPaths(root / "config.toml", root / "secrets.env")
+        answers = iter(["", "", "", "setup-secret", ""])
+        original_list_foreign = setup.list_foreign_packages
+        original_fetch_packages = setup.fetch_packages
+
+        try:
+            setup.list_foreign_packages = lambda: ["demo", "stale"]
+            setup.fetch_packages = lambda packages, scan_mode: (
+                {"demo": [BuildFile("PKGBUILD", "pkgname=demo\n")]},
+                {"stale": "not found"},
+            )
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                run_setup(paths, input_func=lambda prompt: next(answers))
+            baseline = load_baseline(root / "state" / "aurg" / "packages.json")
+        finally:
+            setup.list_foreign_packages = original_list_foreign
+            setup.fetch_packages = original_fetch_packages
+
+    assert sorted(baseline["packages"]) == ["demo"]
 
 
 def test_default_config_path_detection() -> None:
@@ -233,6 +380,8 @@ class clean_config_env:
         "AURG_PROVIDER",
         "AURG_MODEL",
         "AURG_REQUIRE_AI",
+        "AURG_MAX_UPDATE_REQUESTS",
+        "XDG_STATE_HOME",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "OPENAI_API_KEY",
@@ -256,11 +405,18 @@ if __name__ == "__main__":
     test_scan_file_matching()
     test_cgit_tree_parser()
     test_prompt_contains_multiple_files()
+    test_batch_prompt_contains_package_boundaries()
     test_local_build_file_collection()
     test_pkgbuild_scan_mode_only_reads_pkgbuild()
     test_config_and_secrets_override_paths()
+    test_config_reads_max_update_requests()
     test_config_rejects_unimplemented_provider()
     test_aur_helper_selection()
     test_helper_arg_classification()
+    test_baseline_round_trip_and_compare()
+    test_split_evenly_limits_group_count()
+    test_batch_ai_response_validation()
+    test_full_update_scans_only_changed_baseline_packages()
     test_setup_writes_config_and_secrets()
+    test_setup_seeds_baseline_with_mocked_packages()
     test_default_config_path_detection()

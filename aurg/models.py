@@ -8,6 +8,12 @@ class BuildFile:
 
 
 @dataclass
+class PackageBuild:
+    name: str
+    files: list[BuildFile]
+
+
+@dataclass
 class Finding:
     file: str
     line: int
@@ -23,3 +29,9 @@ class ScanResult:
     summary: str
     source: str
     cache_key: str
+
+
+@dataclass
+class PackageScanResult:
+    package: str
+    result: ScanResult

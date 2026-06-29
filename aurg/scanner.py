@@ -1,11 +1,12 @@
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from .ai_client import scan_with_ai
+from .ai_client import scan_package_group_with_ai, scan_with_ai
 from .config import Config, PROMPT_VERSION, RULES_VERSION
 from .fetch import should_scan_build_file, sort_build_file_paths
 from .local_rules import scan_with_local_rules
-from .models import BuildFile, ScanResult
+from .models import BuildFile, PackageBuild, PackageScanResult, ScanResult
 
 
 def scan_files(files: list[BuildFile], config: Config, no_ai: bool = False) -> ScanResult:
@@ -19,6 +20,43 @@ def scan_files(files: list[BuildFile], config: Config, no_ai: bool = False) -> S
     fallback = scan_with_local_rules(files)
     fallback.cache_key = cache_key
     return fallback
+
+
+def scan_package_groups(packages: list[PackageBuild], config: Config, no_ai: bool = False) -> list[PackageScanResult]:
+    groups = split_evenly(packages, config.max_update_requests)
+    if not groups:
+        return []
+
+    results_by_package: dict[str, PackageScanResult] = {}
+    with ThreadPoolExecutor(max_workers=len(groups)) as executor:
+        futures = [executor.submit(scan_package_group, group, config, no_ai) for group in groups]
+        for future in as_completed(futures):
+            for result in future.result():
+                results_by_package[result.package] = result
+
+    return [results_by_package[package.name] for package in packages if package.name in results_by_package]
+
+
+def scan_package_group(packages: list[PackageBuild], config: Config, no_ai: bool = False) -> list[PackageScanResult]:
+    if not no_ai:
+        ai_results = scan_package_group_with_ai(packages, config)
+        if ai_results is not None:
+            return ai_results
+    return [PackageScanResult(package.name, scan_with_local_rules(package.files)) for package in packages]
+
+
+def split_evenly(values: list[PackageBuild], max_groups: int) -> list[list[PackageBuild]]:
+    if not values:
+        return []
+    group_count = min(max_groups, len(values))
+    base_size, remainder = divmod(len(values), group_count)
+    groups = []
+    start = 0
+    for index in range(group_count):
+        size = base_size + (1 if index < remainder else 0)
+        groups.append(values[start : start + size])
+        start += size
+    return groups
 
 
 def scan_local_pkgbuild(path: Path, config: Config, no_ai: bool = False) -> ScanResult:

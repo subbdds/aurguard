@@ -1,7 +1,10 @@
 from collections.abc import Callable
 import shutil
+import sys
 
+from .baseline import default_baseline_path, write_baseline
 from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, write_config_file, write_secrets_file
+from .packages import fetch_packages, list_foreign_packages
 
 
 InputFunc = Callable[[str], str]
@@ -42,7 +45,29 @@ def run_setup(
 
     print(f"Wrote config: {paths.config}")
     print(f"Wrote secrets: {paths.secrets}")
+    seed_update_baseline(config)
     return config
+
+
+def seed_update_baseline(config: Config) -> None:
+    packages = list_foreign_packages()
+    if packages is None:
+        print("Could not list installed foreign packages; skipped update baseline.", file=sys.stderr)
+        return
+    if not packages:
+        print("No installed foreign packages found; skipped update baseline.")
+        return
+
+    fetched, failures = fetch_packages(packages, config.scan_mode)
+    if fetched:
+        write_baseline(fetched, config.scan_mode)
+    for package, reason in failures.items():
+        print(f"Baseline skipped {package}: {reason}", file=sys.stderr)
+
+    print(
+        f"Wrote update baseline: {default_baseline_path()} "
+        f"({len(packages)} detected, {len(fetched)} recorded, {len(failures)} skipped)"
+    )
 
 
 def choose_aur_helper(input_func: InputFunc) -> str:
