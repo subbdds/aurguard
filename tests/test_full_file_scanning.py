@@ -328,7 +328,8 @@ def test_unchanged_update_package_skips_ai() -> None:
         try:
             wrapper.fetch_build_files = lambda package, scan_mode: files
             wrapper.scan_update_packages = lambda packages, config, no_ai=False: called.__setitem__("ai", True)
-            with contextlib.redirect_stdout(io.StringIO()):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
                 result = scan_update_candidates([AurUpdate("demo", "1", "2")], Config(api_key="key"), False, False)
         finally:
             wrapper.fetch_build_files = original_fetch
@@ -336,6 +337,66 @@ def test_unchanged_update_package_skips_ai() -> None:
 
     assert result == {"demo": files}
     assert not called["ai"]
+    assert "All AUR update build files match recorded baselines. No AI scan required." in output.getvalue()
+
+
+def test_system_update_refreshes_before_listing_updates() -> None:
+    original_find = wrapper.find_aur_helper
+    original_refresh = wrapper.refresh_package_databases
+    original_list = wrapper.list_aur_updates_info
+    original_run = wrapper.run_helper
+    calls = []
+    try:
+        wrapper.find_aur_helper = lambda preference: "/usr/bin/yay"
+
+        def fake_refresh(helper: str) -> bool:
+            calls.append("refresh")
+            return True
+
+        def fake_list(helper: str) -> list[AurUpdate]:
+            calls.append("list")
+            return []
+
+        def fake_run(args: list[str], config: Config, helper: str | None = None) -> int:
+            calls.append("run")
+            return 0
+
+        wrapper.refresh_package_databases = fake_refresh
+        wrapper.list_aur_updates_info = fake_list
+        wrapper.run_helper = fake_run
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = run_scanned_helper_command(["-Syu"], [], True, Config(), False, False)
+    finally:
+        wrapper.find_aur_helper = original_find
+        wrapper.refresh_package_databases = original_refresh
+        wrapper.list_aur_updates_info = original_list
+        wrapper.run_helper = original_run
+
+    assert code == 0
+    assert calls == ["refresh", "list", "run"]
+
+
+def test_system_update_stops_when_refresh_fails() -> None:
+    original_find = wrapper.find_aur_helper
+    original_refresh = wrapper.refresh_package_databases
+    original_list = wrapper.list_aur_updates_info
+    original_run = wrapper.run_helper
+    calls = []
+    try:
+        wrapper.find_aur_helper = lambda preference: "/usr/bin/yay"
+        wrapper.refresh_package_databases = lambda helper: False
+        wrapper.list_aur_updates_info = lambda helper: calls.append("list") or []
+        wrapper.run_helper = lambda args, config, helper=None: calls.append("run") or 0
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = run_scanned_helper_command(["-Syu"], [], True, Config(), False, False)
+    finally:
+        wrapper.find_aur_helper = original_find
+        wrapper.refresh_package_databases = original_refresh
+        wrapper.list_aur_updates_info = original_list
+        wrapper.run_helper = original_run
+
+    assert code == 1
+    assert calls == []
 
 
 def test_changed_update_package_builds_diff_input() -> None:
@@ -472,6 +533,8 @@ if __name__ == "__main__":
     test_setup_records_installed_package_baselines()
     test_setup_baseline_failures_are_summarized()
     test_unchanged_update_package_skips_ai()
+    test_system_update_refreshes_before_listing_updates()
+    test_system_update_stops_when_refresh_fails()
     test_changed_update_package_builds_diff_input()
     test_update_fragmentation_splits_packages_evenly()
     test_update_fragmentation_uses_needed_request_count()

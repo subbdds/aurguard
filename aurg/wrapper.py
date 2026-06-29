@@ -80,6 +80,9 @@ def run_scanned_helper_command(
     scanned_versions: dict[str, str | None] = {}
     update_names: set[str] = set()
     if scan_updates:
+        if not refresh_package_databases(helper):
+            print("Could not refresh package databases before AUR update scan.", file=sys.stderr)
+            return 1
         updates = list_aur_updates_info(helper)
         if updates is None:
             print("Could not list AUR updates for scanning.", file=sys.stderr)
@@ -174,6 +177,8 @@ def scan_update_candidates(
     print(f"AUR updates: {len(updates)}")
     print(f"Unchanged build files: {skipped} skipped")
     print(f"Changed build files: {len(changed)} package(s)")
+    if skipped == len(updates) and not full_scan and not changed:
+        print("All AUR update build files match recorded baselines. No AI scan required.")
 
     scanned: dict[str, list[BuildFile]] = {}
     if full_scan:
@@ -226,6 +231,12 @@ def run_helper(args: list[str], config: Config, helper: str | None = None) -> in
     print(f"Running: {' '.join([helper, *args])}")
     completed = subprocess.run([helper, *args], check=False)
     return completed.returncode
+
+
+def refresh_package_databases(helper: str) -> bool:
+    print(f"Refreshing package databases before AUR update scan: {helper} -Sy")
+    completed = subprocess.run([helper, "-Sy"], check=False)
+    return completed.returncode == 0
 
 
 def list_aur_updates(helper: str) -> list[str] | None:
