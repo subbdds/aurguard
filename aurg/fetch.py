@@ -1,11 +1,13 @@
+import io
 import re
+import tarfile
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 import urllib.parse
 import urllib.error
 import urllib.request
 
-from .config import MAX_AUR_FILE_BYTES, MAX_AUR_SCAN_FILES, MAX_AUR_TREE_PAGES, USER_AGENT
+from .config import MAX_AUR_FILE_BYTES, MAX_AUR_SCAN_FILES, MAX_AUR_SNAPSHOT_BYTES, MAX_AUR_TREE_PAGES, USER_AGENT
 from .errors import AurgError
 from .models import BuildFile
 
@@ -40,6 +42,12 @@ class CgitTreeParser(HTMLParser):
 
 def fetch_build_files(package: str, scan_mode: str = "full") -> list[BuildFile]:
     validate_package_name(package)
+    try:
+        return fetch_build_files_snapshot(package, scan_mode)
+    except AurgError as exc:
+        if not should_fallback_from_snapshot_error(str(exc)):
+            raise
+
     if scan_mode == "pkgbuild":
         return [BuildFile("PKGBUILD", fetch_plain_file(package, "PKGBUILD"))]
 
@@ -54,6 +62,65 @@ def fetch_build_files(package: str, scan_mode: str = "full") -> list[BuildFile]:
     for path in sort_build_file_paths(discovered):
         files.append(BuildFile(path, fetch_plain_file(package, path)))
     return files
+
+
+def fetch_build_files_snapshot(package: str, scan_mode: str = "full") -> list[BuildFile]:
+    body = fetch_url(build_cgit_snapshot_url(package), MAX_AUR_SNAPSHOT_BYTES)
+    files = read_snapshot_build_files(body, scan_mode)
+    if not files:
+        raise AurgError("AUR snapshot did not contain scan-relevant build files")
+    if not any(file.name == "PKGBUILD" for file in files):
+        raise AurgError("AUR snapshot did not contain PKGBUILD")
+    return files
+
+
+def read_snapshot_build_files(body: bytes, scan_mode: str = "full") -> list[BuildFile]:
+    paths: list[str] = []
+    text_by_path: dict[str, str] = {}
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                path = snapshot_member_path(member.name)
+                if path is None:
+                    continue
+                if scan_mode == "pkgbuild" and path != "PKGBUILD":
+                    continue
+                if scan_mode != "pkgbuild" and not should_scan_build_file(path):
+                    continue
+                if member.size > MAX_AUR_FILE_BYTES:
+                    raise AurgError(f"AUR snapshot file exceeded maximum scan size: {path}")
+                if path not in text_by_path:
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        continue
+                    text_by_path[path] = extracted.read(MAX_AUR_FILE_BYTES + 1).decode("utf-8", errors="replace")
+                    paths.append(path)
+                if len(paths) > MAX_AUR_SCAN_FILES:
+                    raise AurgError(f"AUR package has too many scan-relevant files ({len(paths)})")
+    except tarfile.TarError as exc:
+        raise AurgError("AUR snapshot was not a valid tar.gz archive") from exc
+
+    return [BuildFile(path, text_by_path[path]) for path in sort_build_file_paths(paths)]
+
+
+def snapshot_member_path(name: str) -> str | None:
+    if "\0" in name or name.startswith("/"):
+        return None
+    parts = name.split("/")
+    if len(parts) > 1:
+        path = "/".join(parts[1:])
+    else:
+        path = name
+    if not is_safe_repo_path(path):
+        return None
+    return path
+
+
+def should_fallback_from_snapshot_error(reason: str) -> bool:
+    return "snapshot did not contain" in reason or "not a valid tar.gz" in reason
 
 
 def fetch_pkgbuild(package: str) -> str:
@@ -141,6 +208,12 @@ def build_cgit_url(kind: str, package: str, path: str = "") -> str:
     suffix = f"/{quoted_path}" if quoted_path else ""
     query = urllib.parse.urlencode({"h": package})
     return f"https://aur.archlinux.org/cgit/aur.git/{kind}{suffix}?{query}"
+
+
+def build_cgit_snapshot_url(package: str) -> str:
+    quoted_package = urllib.parse.quote(package, safe="")
+    query = urllib.parse.urlencode({"h": package})
+    return f"https://aur.archlinux.org/cgit/aur.git/snapshot/{quoted_package}.tar.gz?{query}"
 
 
 def path_from_tree_href(href: str) -> str | None:

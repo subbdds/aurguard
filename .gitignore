@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 /configs
 README.md
+/tests
+/experiments

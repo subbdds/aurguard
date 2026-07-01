@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
+import threading
 import time
 
 from .errors import AurgError
@@ -8,8 +9,26 @@ from .models import BuildFile
 from .progress import Progress
 
 
-MAX_FETCH_WORKERS = 2
+MAX_FETCH_WORKERS = 8
 MAX_FETCH_ATTEMPTS = 3
+FETCH_REQUEST_SPACING_SECONDS = 0.2
+
+
+class RequestPacer:
+    def __init__(self, spacing_seconds: float) -> None:
+        self.spacing_seconds = spacing_seconds
+        self.next_start = 0.0
+        self.lock = threading.Lock()
+
+    def wait(self) -> None:
+        if self.spacing_seconds <= 0:
+            return
+        with self.lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self.next_start - now)
+            self.next_start = max(now, self.next_start) + self.spacing_seconds
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
 
 def list_foreign_packages() -> list[str] | None:
@@ -30,9 +49,10 @@ def fetch_packages(packages: list[str], scan_mode: str, label: str = "Fetching A
         return fetched, failures
 
     workers = min(MAX_FETCH_WORKERS, len(unique_packages))
+    pacer = RequestPacer(FETCH_REQUEST_SPACING_SECONDS)
     with Progress(label, len(unique_packages)) as progress:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(fetch_build_files_with_retry, package, scan_mode): package for package in unique_packages}
+            futures = {executor.submit(fetch_build_files_with_retry, package, scan_mode, pacer): package for package in unique_packages}
             for future in as_completed(futures):
                 package = futures[future]
                 try:
@@ -45,10 +65,12 @@ def fetch_packages(packages: list[str], scan_mode: str, label: str = "Fetching A
     return dict(sorted(fetched.items())), dict(sorted(failures.items()))
 
 
-def fetch_build_files_with_retry(package: str, scan_mode: str) -> list[BuildFile]:
+def fetch_build_files_with_retry(package: str, scan_mode: str, pacer: RequestPacer | None = None) -> list[BuildFile]:
     last_error: AurgError | None = None
     for attempt in range(MAX_FETCH_ATTEMPTS):
         try:
+            if pacer is not None:
+                pacer.wait()
             return fetch_build_files(package, scan_mode)
         except AurgError as exc:
             last_error = exc
