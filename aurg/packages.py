@@ -41,7 +41,12 @@ def list_foreign_packages() -> list[str] | None:
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
-def fetch_packages(packages: list[str], scan_mode: str, label: str = "Fetching AUR build files") -> tuple[dict[str, list[BuildFile]], dict[str, str]]:
+def fetch_packages(
+    packages: list[str],
+    scan_mode: str,
+    label: str = "Fetching AUR build files",
+    package_bases: dict[str, str] | None = None,
+) -> tuple[dict[str, list[BuildFile]], dict[str, str]]:
     fetched: dict[str, list[BuildFile]] = {}
     failures: dict[str, str] = {}
     unique_packages = unique_preserving_order(packages)
@@ -52,7 +57,10 @@ def fetch_packages(packages: list[str], scan_mode: str, label: str = "Fetching A
     pacer = RequestPacer(FETCH_REQUEST_SPACING_SECONDS)
     with Progress(label, len(unique_packages)) as progress:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(fetch_build_files_with_retry, package, scan_mode, pacer): package for package in unique_packages}
+            futures = {
+                executor.submit(fetch_build_files_with_retry, package_bases.get(package, package) if package_bases else package, scan_mode, pacer): package
+                for package in unique_packages
+            }
             for future in as_completed(futures):
                 package = futures[future]
                 try:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import APP_NAME
 from .models import BuildFile, PackageBuild
+from .aur_rpc import AurPackageInfo
 
 
 BASELINE_VERSION = 1
@@ -51,9 +52,10 @@ def write_baseline(
     scan_mode: str,
     path: Path | None = None,
     unavailable: dict[str, dict] | None = None,
+    metadata: dict[str, AurPackageInfo] | None = None,
 ) -> None:
     baseline_path = path or default_baseline_path()
-    manifest = build_manifest(packages, scan_mode, unavailable or {})
+    manifest = build_manifest(packages, scan_mode, unavailable or {}, metadata or {})
     baseline_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = baseline_path.with_name(f"{baseline_path.name}.tmp")
     tmp_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -65,16 +67,20 @@ def merge_baseline(
     scan_mode: str,
     path: Path | None = None,
     unavailable: dict[str, dict] | None = None,
+    metadata: dict[str, AurPackageInfo] | None = None,
 ) -> None:
     manifest = load_baseline(path)
     stored = baseline_packages_to_files(manifest)
     stored.update(packages)
+    stored_metadata = baseline_package_metadata(manifest)
+    if metadata:
+        stored_metadata.update(metadata)
     stored_unavailable = baseline_unavailable(manifest)
     for package in packages:
         stored_unavailable.pop(package, None)
     if unavailable:
         stored_unavailable.update(unavailable)
-    write_baseline(stored, scan_mode, path, stored_unavailable)
+    write_baseline(stored, scan_mode, path, stored_unavailable, stored_metadata)
 
 
 def compare_to_baseline(packages: dict[str, list[BuildFile]], baseline: dict | None = None) -> BaselineCompare:
@@ -98,19 +104,34 @@ def compare_to_baseline(packages: dict[str, list[BuildFile]], baseline: dict | N
     return BaselineCompare(unchanged=unchanged, changed=changed, skipped_unavailable=skipped_unavailable)
 
 
-def build_manifest(packages: dict[str, list[BuildFile]], scan_mode: str, unavailable: dict[str, dict] | None = None) -> dict:
+def build_manifest(
+    packages: dict[str, list[BuildFile]],
+    scan_mode: str,
+    unavailable: dict[str, dict] | None = None,
+    metadata: dict[str, AurPackageInfo] | None = None,
+) -> dict:
+    metadata = metadata or {}
     return {
         "version": BASELINE_VERSION,
         "scan_mode": scan_mode,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "packages": {
-            package: {
-                "files": encode_files(files),
-            }
+            package: build_package_entry(package, files, metadata.get(package))
             for package, files in sorted(packages.items())
         },
         "unavailable": unavailable or {},
     }
+
+
+def build_package_entry(package: str, files: list[BuildFile], metadata: AurPackageInfo | None = None) -> dict:
+    entry = {
+        "name": package,
+        "files": encode_files(files),
+    }
+    if metadata is not None:
+        entry["package_base"] = metadata.package_base
+        entry["last_modified"] = metadata.last_modified
+    return entry
 
 
 def empty_manifest() -> dict:
@@ -156,6 +177,26 @@ def baseline_packages_to_files(manifest: dict) -> dict[str, list[BuildFile]]:
     return packages
 
 
+def baseline_package_metadata(manifest: dict | None = None) -> dict[str, AurPackageInfo]:
+    data = manifest if manifest is not None else load_baseline()
+    stored = data.get("packages", {})
+    if not isinstance(stored, dict):
+        return {}
+
+    metadata: dict[str, AurPackageInfo] = {}
+    for package, package_data in stored.items():
+        if not isinstance(package, str) or not isinstance(package_data, dict):
+            continue
+        package_base = package_data.get("package_base")
+        last_modified = package_data.get("last_modified")
+        if not isinstance(package_base, str):
+            package_base = package
+        if not isinstance(last_modified, int) or isinstance(last_modified, bool):
+            continue
+        metadata[package] = AurPackageInfo(package, package_base, last_modified)
+    return metadata
+
+
 def baseline_unavailable(manifest: dict | None = None) -> dict[str, dict]:
     data = manifest if manifest is not None else load_baseline()
     unavailable = data.get("unavailable", {})
@@ -191,6 +232,8 @@ def unavailable_status(reason: str) -> int | None:
         return 404
     if "HTTP 429" in reason:
         return 429
+    if "AUR RPC package not found" in reason:
+        return 404
     return None
 
 

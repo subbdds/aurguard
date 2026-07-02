@@ -4,7 +4,9 @@ import shutil
 import sys
 
 from .baseline import default_baseline_path, merge_baseline, unavailable_from_failures, unavailable_packages
+from .aur_rpc import fetch_package_info
 from .config import Config, ConfigError, ConfigPaths, DEFAULT_MODEL, resolve_api_key, write_config_file, write_secrets_file
+from .errors import AurgError
 from .packages import fetch_packages, list_foreign_packages
 
 
@@ -61,11 +63,20 @@ def rescan_update_baseline(config: Config, skip_unavailable: bool = False) -> bo
         return True
 
     skipped = sorted(unavailable_packages().intersection(packages)) if skip_unavailable else []
-    packages_to_fetch = [package for package in packages if package not in set(skipped)]
-    fetched, failures = fetch_packages(packages_to_fetch, config.scan_mode, "Establishing update baseline")
+    packages_to_check = [package for package in packages if package not in set(skipped)]
+    try:
+        metadata, failures = fetch_package_info(packages_to_check)
+    except AurgError as exc:
+        print(f"Could not query AUR metadata; skipped update baseline: {exc}", file=sys.stderr)
+        return False
+
+    package_bases = {package: info.package_base for package, info in metadata.items()}
+    fetched, fetch_failures = fetch_packages(list(metadata), config.scan_mode, "Establishing update baseline", package_bases)
+    failures.update(fetch_failures)
     unavailable = unavailable_from_failures(failures)
     if fetched or unavailable:
-        merge_baseline(fetched, config.scan_mode, unavailable=unavailable)
+        fetched_metadata = {package: metadata[package] for package in fetched if package in metadata}
+        merge_baseline(fetched, config.scan_mode, unavailable=unavailable, metadata=fetched_metadata)
     print_failure_summary("Baseline skipped", failures)
 
     print(
