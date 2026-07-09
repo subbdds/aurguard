@@ -7,6 +7,7 @@ from .config import (
     DEFAULT_MODEL,
     ConfigError,
     ConfigOverrides,
+    load_dotenv,
     load_config,
     resolve_config_paths,
     uses_default_config_paths,
@@ -27,6 +28,7 @@ def run() -> int:
 
 def main() -> int:
     args = parse_args()
+    load_dotenv()
     paths = resolve_config_paths(args.config, args.secrets)
 
     if args.command == "setup":

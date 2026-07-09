@@ -91,6 +91,8 @@ def fetch_build_files_with_retry(package: str, scan_mode: str, pacer: RequestPac
 
 
 def should_retry_fetch(reason: str) -> bool:
+    if "network unavailable" in reason:
+        return False
     return "HTTP 429" in reason or "Connection reset by peer" in reason or "timed out" in reason
 
 

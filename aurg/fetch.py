@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
-from .config import MAX_AUR_FILE_BYTES, MAX_AUR_SCAN_FILES, MAX_AUR_SNAPSHOT_BYTES, MAX_AUR_TREE_PAGES, USER_AGENT
+from .config import AUR_REQUEST_TIMEOUT_SECONDS, MAX_AUR_FILE_BYTES, MAX_AUR_SCAN_FILES, MAX_AUR_SNAPSHOT_BYTES, MAX_AUR_TREE_PAGES, USER_AGENT
 from .errors import AurgError
 from .models import BuildFile
 
@@ -187,13 +187,15 @@ def fetch_url(url: str, byte_limit: int) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=AUR_REQUEST_TIMEOUT_SECONDS) as response:
             status = getattr(response, "status", 200)
             body = response.read(byte_limit + 1)
     except urllib.error.HTTPError as exc:
         raise AurgError(f"AUR returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise AurgError(f"network unavailable or AUR unreachable: {network_error_reason(exc)}") from exc
     except OSError as exc:
-        raise AurgError(str(exc)) from exc
+        raise AurgError(f"network unavailable or AUR unreachable: {exc}") from exc
 
     if status != 200:
         raise AurgError(f"AUR returned HTTP {status}")
@@ -201,6 +203,11 @@ def fetch_url(url: str, byte_limit: int) -> bytes:
         raise AurgError("AUR response exceeded maximum scan size")
 
     return body
+
+
+def network_error_reason(exc: urllib.error.URLError) -> str:
+    reason = getattr(exc, "reason", exc)
+    return str(reason)
 
 
 def build_cgit_url(kind: str, package: str, path: str = "") -> str:

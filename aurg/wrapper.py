@@ -90,6 +90,7 @@ def run_scanned_helper_command(
     if return_code == 0:
         baseline_updates: dict[str, list[BuildFile]] = {}
         metadata_updates: dict[str, AurPackageInfo] = {}
+        unavailable: dict[str, dict] = {}
         if scan_updates and update_scan:
             baseline_updates.update(update_scan.fetched)
             metadata_updates.update(update_scan.metadata)
@@ -117,6 +118,7 @@ def run_scanned_helper_command(
 def scan_packages(packages: list[str], config: Config, no_ai: bool = False, force_dangerous: bool = False) -> bool:
     for package in packages:
         try:
+            print(f"Fetching AUR build files for {package}...", file=sys.stderr)
             files = fetch_build_files(package, config.scan_mode)
         except AurgError as exc:
             print(f"Fetch failed for {package}: {exc}", file=sys.stderr)

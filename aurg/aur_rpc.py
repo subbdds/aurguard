@@ -1,9 +1,10 @@
 import json
 from dataclasses import dataclass
 import urllib.parse
+import urllib.error
 import urllib.request
 
-from .config import MAX_AUR_FILE_BYTES, USER_AGENT
+from .config import AUR_REQUEST_TIMEOUT_SECONDS, MAX_AUR_FILE_BYTES, USER_AGENT
 from .errors import AurgError
 from .progress import Progress
 
@@ -42,11 +43,15 @@ def fetch_package_info_chunk(packages: list[str]) -> tuple[dict[str, AurPackageI
     request = urllib.request.Request(f"{AUR_RPC_BASE}?{query}", headers={"User-Agent": USER_AGENT})
 
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=AUR_REQUEST_TIMEOUT_SECONDS) as response:
             status = getattr(response, "status", 200)
             body = response.read(MAX_AUR_FILE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise AurgError(f"AUR RPC returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise AurgError(f"AUR RPC network unavailable: {network_error_reason(exc)}") from exc
     except OSError as exc:
-        raise AurgError(f"AUR RPC request failed: {exc}") from exc
+        raise AurgError(f"AUR RPC network unavailable: {exc}") from exc
 
     if status != 200:
         raise AurgError(f"AUR RPC returned HTTP {status}")
@@ -71,6 +76,11 @@ def fetch_package_info_chunk(packages: list[str]) -> tuple[dict[str, AurPackageI
 
     failures = {package: "AUR RPC package not found" for package in packages if package not in info_by_name}
     return info_by_name, failures
+
+
+def network_error_reason(exc: urllib.error.URLError) -> str:
+    reason = getattr(exc, "reason", exc)
+    return str(reason)
 
 
 def parse_package_info(item: dict) -> AurPackageInfo | None:

@@ -12,14 +12,37 @@ from .progress import Progress
 
 def scan_files(files: list[BuildFile], config: Config, no_ai: bool = False) -> ScanResult:
     cache_key = compute_cache_key(files, config.model)
+    if not files:
+        return ScanResult(
+            verdict="Review",
+            findings=[],
+            summary="No build files were available to scan.",
+            source="local",
+            cache_key=cache_key,
+        )
 
     if not no_ai:
         ai_result = scan_with_ai(files, config, cache_key)
         if ai_result:
+            if ai_result.source == "ai-fallback":
+                return merge_ai_failure_with_local(ai_result, files, cache_key)
             return ai_result
 
     fallback = scan_with_local_rules(files)
     fallback.cache_key = cache_key
+    return fallback
+
+
+def merge_ai_failure_with_local(ai_result: ScanResult, files: list[BuildFile], cache_key: str) -> ScanResult:
+    fallback = scan_with_local_rules(files)
+    fallback.cache_key = cache_key
+    if fallback.verdict == "Safe":
+        ai_result.cache_key = cache_key
+        return ai_result
+
+    fallback.findings = [*ai_result.findings, *fallback.findings]
+    fallback.summary = f"{ai_result.summary} Local fallback also found suspicious behavior."
+    fallback.source = "ai-fallback+local"
     return fallback
 
 
@@ -29,7 +52,7 @@ def scan_package_groups(packages: list[PackageBuild], config: Config, no_ai: boo
         return []
 
     results_by_package: dict[str, PackageScanResult] = {}
-    with Progress("Scanning package groups with AI", len(groups)) as progress:
+    with Progress("Scanning package groups", len(groups)) as progress:
         with ThreadPoolExecutor(max_workers=len(groups)) as executor:
             futures = [executor.submit(scan_package_group, group, config, no_ai) for group in groups]
             for future in as_completed(futures):
@@ -44,8 +67,20 @@ def scan_package_group(packages: list[PackageBuild], config: Config, no_ai: bool
     if not no_ai:
         ai_results = scan_package_group_with_ai(packages, config)
         if ai_results is not None:
-            return ai_results
-    return [PackageScanResult(package.name, scan_with_local_rules(package.files)) for package in packages]
+            return with_package_cache_keys(ai_results, packages, config.model)
+    return [PackageScanResult(package.name, scan_files(package.files, config, no_ai=True)) for package in packages]
+
+
+def with_package_cache_keys(
+    results: list[PackageScanResult],
+    packages: list[PackageBuild],
+    model: str,
+) -> list[PackageScanResult]:
+    files_by_package = {package.name: package.files for package in packages}
+    for result in results:
+        if not result.result.cache_key and result.package in files_by_package:
+            result.result.cache_key = compute_cache_key(files_by_package[result.package], model)
+    return results
 
 
 def split_evenly(values: list[PackageBuild], max_groups: int) -> list[list[PackageBuild]]:

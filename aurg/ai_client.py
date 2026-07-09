@@ -2,7 +2,7 @@ import json
 import urllib.parse
 import urllib.request
 
-from .config import Config, GEMINI_ENDPOINT_BASE, USER_AGENT, VERDICT_ORDER
+from .config import AI_REQUEST_TIMEOUT_SECONDS, Config, GEMINI_ENDPOINT_BASE, USER_AGENT, VERDICT_ORDER
 from .models import BuildFile, Finding, PackageBuild, PackageScanResult, ScanResult
 from .prompts import BATCH_SYSTEM_PROMPT, SYSTEM_PROMPT, build_batch_user_prompt, build_user_prompt
 from .schemas import AI_RESPONSE_SCHEMA, BATCH_AI_RESPONSE_SCHEMA
@@ -31,7 +31,7 @@ def scan_with_ai(files: list[BuildFile], config: Config, cache_key: str) -> Scan
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read(1024 * 1024)
     except OSError as exc:
         return api_failure_result(files, cache_key, f"AI request failed: {exc}")
@@ -68,7 +68,7 @@ def scan_package_group_with_ai(packages: list[PackageBuild], config: Config) -> 
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read(1024 * 1024)
     except OSError as exc:
         return [PackageScanResult(package.name, api_failure_result(package.files, "", f"AI request failed: {exc}")) for package in packages]
@@ -107,7 +107,7 @@ def build_batch_gemini_payload(packages: list[PackageBuild]) -> dict:
 
 
 def api_failure_result(files: list[BuildFile], cache_key: str, reason: str) -> ScanResult:
-    first = files[0]
+    first = files[0] if files else BuildFile("PKGBUILD", "")
     return ScanResult(
         verdict="Review",
         findings=[
@@ -153,6 +153,7 @@ def extract_output_text(api_response: dict) -> str:
 
 def validate_ai_result(data: dict, files: list[BuildFile], cache_key: str) -> ScanResult:
     valid_files = {file.name for file in files}
+    fallback_file_name = files[0].name if files else "PKGBUILD"
     verdict = data.get("verdict")
     if verdict not in VERDICT_ORDER:
         raise ValueError("invalid verdict")
@@ -165,7 +166,7 @@ def validate_ai_result(data: dict, files: list[BuildFile], cache_key: str) -> Sc
         reason = str(item.get("reason", "")).strip()
 
         if file_name not in valid_files:
-            file_name = files[0].name
+            file_name = fallback_file_name
         if severity not in VERDICT_ORDER:
             severity = verdict
         if not isinstance(line, int) or line < 1:
@@ -217,6 +218,7 @@ def validate_batch_ai_result(data: dict, packages: list[PackageBuild]) -> list[P
 
 def validate_package_scan_item(data: dict, files: list[BuildFile]) -> ScanResult:
     valid_files = {file.name for file in files}
+    fallback_file_name = files[0].name if files else "PKGBUILD"
     verdict = data.get("verdict")
     if verdict not in VERDICT_ORDER:
         raise ValueError("invalid verdict")
@@ -229,7 +231,7 @@ def validate_package_scan_item(data: dict, files: list[BuildFile]) -> ScanResult
         reason = str(item.get("reason", "")).strip()
 
         if file_name not in valid_files:
-            file_name = files[0].name
+            file_name = fallback_file_name
         if severity not in VERDICT_ORDER:
             severity = verdict
         if not isinstance(line, int) or line < 1:
