@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -29,6 +29,7 @@ class ScanResult:
     summary: str
     source: str
     cache_key: str
+    debug: list[str] = field(default_factory=list)
 
 
 @dataclass

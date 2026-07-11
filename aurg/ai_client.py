@@ -40,7 +40,10 @@ def scan_with_ai(files: list[BuildFile], config: Config, cache_key: str) -> Scan
         api_response = json.loads(raw.decode("utf-8"))
         output_text = extract_output_text(api_response)
         parsed = json.loads(output_text)
-        return validate_ai_result(parsed, files, cache_key)
+        result = validate_ai_result(parsed, files, cache_key)
+        result.debug.append("AI request completed")
+        result.debug.append(f"AI findings returned={len(result.findings)}")
+        return result
     except (TypeError, ValueError, KeyError):
         return api_failure_result(files, cache_key, "AI returned malformed output.")
 
@@ -77,7 +80,11 @@ def scan_package_group_with_ai(packages: list[PackageBuild], config: Config) -> 
         api_response = json.loads(raw.decode("utf-8"))
         output_text = extract_output_text(api_response)
         parsed = json.loads(output_text)
-        return validate_batch_ai_result(parsed, packages)
+        results = validate_batch_ai_result(parsed, packages)
+        for result in results:
+            result.result.debug.append("batch AI request completed")
+            result.result.debug.append(f"AI findings returned={len(result.result.findings)}")
+        return results
     except (TypeError, ValueError, KeyError):
         return [PackageScanResult(package.name, api_failure_result(package.files, "", "AI returned malformed output.")) for package in packages]
 
@@ -122,6 +129,7 @@ def api_failure_result(files: list[BuildFile], cache_key: str, reason: str) -> S
         summary="AI scan was unavailable or invalid, so manual review is required.",
         source="ai-fallback",
         cache_key=cache_key,
+        debug=[reason],
     )
 
 

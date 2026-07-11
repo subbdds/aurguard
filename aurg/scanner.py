@@ -12,6 +12,7 @@ from .progress import Progress
 
 def scan_files(files: list[BuildFile], config: Config, no_ai: bool = False) -> ScanResult:
     cache_key = compute_cache_key(files, config.model)
+    debug = scan_debug_lines(files, config, no_ai, cache_key)
     if not files:
         return ScanResult(
             verdict="Review",
@@ -19,17 +20,20 @@ def scan_files(files: list[BuildFile], config: Config, no_ai: bool = False) -> S
             summary="No build files were available to scan.",
             source="local",
             cache_key=cache_key,
+            debug=debug,
         )
 
     if not no_ai:
         ai_result = scan_with_ai(files, config, cache_key)
         if ai_result:
+            ai_result.debug = [*debug, *ai_result.debug]
             if ai_result.source == "ai-fallback":
                 return merge_ai_failure_with_local(ai_result, files, cache_key)
             return ai_result
 
     fallback = scan_with_local_rules(files)
     fallback.cache_key = cache_key
+    fallback.debug = [*debug, "local fallback rules completed"]
     return fallback
 
 
@@ -38,12 +42,31 @@ def merge_ai_failure_with_local(ai_result: ScanResult, files: list[BuildFile], c
     fallback.cache_key = cache_key
     if fallback.verdict == "Safe":
         ai_result.cache_key = cache_key
+        ai_result.debug.append("local fallback rules completed with no findings")
         return ai_result
 
     fallback.findings = [*ai_result.findings, *fallback.findings]
     fallback.summary = f"{ai_result.summary} Local fallback also found suspicious behavior."
     fallback.source = "ai-fallback+local"
+    fallback.debug = [*ai_result.debug, "local fallback rules completed with findings"]
     return fallback
+
+
+def scan_debug_lines(files: list[BuildFile], config: Config, no_ai: bool, cache_key: str) -> list[str]:
+    file_lines = [
+        f"file={file.name} bytes={len(file.text.encode('utf-8', errors='replace'))} lines={len(file.text.splitlines())}"
+        for file in files
+    ]
+    return [
+        f"model={config.model}",
+        f"provider={config.provider}",
+        f"scan_mode={config.scan_mode}",
+        f"require_ai={config.require_ai}",
+        f"ai_enabled={not no_ai}",
+        f"cache_key={cache_key}",
+        f"file_count={len(files)}",
+        *file_lines,
+    ]
 
 
 def scan_package_groups(packages: list[PackageBuild], config: Config, no_ai: bool = False) -> list[PackageScanResult]:

@@ -52,16 +52,16 @@ class SystemUpdateScan:
     metadata: dict[str, AurPackageInfo]
 
 
-def install_package(package: str, config: Config, no_ai: bool = False, force_dangerous: bool = False) -> int:
-    return run_scanned_helper_command(["-S", package], [package], False, config, no_ai, force_dangerous)
+def install_package(package: str, config: Config, no_ai: bool = False, force_dangerous: bool = False, full_output: bool = False) -> int:
+    return run_scanned_helper_command(["-S", package], [package], False, config, no_ai, force_dangerous, full_output)
 
 
-def run_helper_command(args: list[str], config: Config, no_ai: bool = False, force_dangerous: bool = False) -> int:
+def run_helper_command(args: list[str], config: Config, no_ai: bool = False, force_dangerous: bool = False, full_output: bool = False) -> int:
     action = classify_helper_args(args)
     if not action.scan:
         return run_helper(args, config)
 
-    return run_scanned_helper_command(args, action.packages, action.scan_updates, config, no_ai, force_dangerous)
+    return run_scanned_helper_command(args, action.packages, action.scan_updates, config, no_ai, force_dangerous, full_output)
 
 
 def run_scanned_helper_command(
@@ -71,6 +71,7 @@ def run_scanned_helper_command(
     config: Config,
     no_ai: bool = False,
     force_dangerous: bool = False,
+    full_output: bool = False,
 ) -> int:
     helper = find_aur_helper(config.aur_helper)
     if not helper:
@@ -79,11 +80,11 @@ def run_scanned_helper_command(
 
     packages_to_scan = unique_preserving_order(packages)
     if scan_updates:
-        update_scan = scan_full_system_update(config, no_ai, force_dangerous)
+        update_scan = scan_full_system_update(config, no_ai, force_dangerous, full_output)
         if update_scan is None:
             return 1
 
-    if packages_to_scan and not scan_packages(packages_to_scan, config, no_ai, force_dangerous):
+    if packages_to_scan and not scan_packages(packages_to_scan, config, no_ai, force_dangerous, full_output):
         return 1
 
     return_code = run_helper(args, config, helper)
@@ -115,7 +116,7 @@ def run_scanned_helper_command(
     return return_code
 
 
-def scan_packages(packages: list[str], config: Config, no_ai: bool = False, force_dangerous: bool = False) -> bool:
+def scan_packages(packages: list[str], config: Config, no_ai: bool = False, force_dangerous: bool = False, full_output: bool = False) -> bool:
     for package in packages:
         try:
             print(f"Fetching AUR build files for {package}...", file=sys.stderr)
@@ -125,7 +126,7 @@ def scan_packages(packages: list[str], config: Config, no_ai: bool = False, forc
             return False
 
         result = scan_files(files, config, no_ai)
-        print_result(result)
+        print_result(result, full_output)
 
         if result.verdict == "Dangerous" and not force_dangerous:
             print(f"Installation blocked: {package}")
@@ -138,7 +139,7 @@ def scan_packages(packages: list[str], config: Config, no_ai: bool = False, forc
     return True
 
 
-def scan_full_system_update(config: Config, no_ai: bool = False, force_dangerous: bool = False) -> SystemUpdateScan | None:
+def scan_full_system_update(config: Config, no_ai: bool = False, force_dangerous: bool = False, full_output: bool = False) -> SystemUpdateScan | None:
     packages = list_foreign_packages()
     if packages is None:
         print("Could not list installed foreign packages for update scanning.", file=sys.stderr)
@@ -206,9 +207,9 @@ def scan_full_system_update(config: Config, no_ai: bool = False, force_dangerous
         f"{len(comparison.unchanged) + len(metadata_unchanged)} unchanged."
     )
     results = scan_package_groups(comparison.changed, config, no_ai)
-    flagged = [result for result in results if result.result.verdict != "Safe"]
+    flagged = results if full_output else [result for result in results if result.result.verdict != "Safe"]
     for result in flagged:
-        print_package_result(result)
+        print_package_result(result, full_output)
 
     dangerous = [result for result in results if result.result.verdict == "Dangerous"]
     if dangerous and not force_dangerous:

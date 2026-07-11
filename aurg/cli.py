@@ -66,19 +66,19 @@ def main() -> int:
 
     if args.command == "scan":
         result = scan_local_pkgbuild(Path(args.path), config, args.no_ai)
-        print_result(result)
+        print_result(result, args.full_output)
         return exit_code_for_verdict(result.verdict)
 
     if args.command == "scanfake":
         result = scan_fake_pkgbuild(Path(args.path), config, args.no_ai)
-        print_result(result)
+        print_result(result, args.full_output)
         return exit_code_for_verdict(result.verdict)
 
     if args.command == "rescan":
         return 0 if rescan_update_baseline(config) else 1
 
     if args.helper_args:
-        return run_helper_command(args.helper_args, config, args.no_ai, args.force_dangerous)
+        return run_helper_command(args.helper_args, config, args.no_ai, args.force_dangerous, args.full_output)
 
     print("Nothing to do. For setup run: aurg setup" \
     "\n> use as you would your AUR helper with arguments like -S, -Syu" \
@@ -94,6 +94,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", help="Path to config.toml. Default: ~/.config/aurg/config.toml")
     parser.add_argument("--secrets", help="Path to secrets.env. Default: ~/.config/aurg/secrets.env")
     parser.add_argument("--no-ai", action="store_true", help="Use local fallback rules only.")
+    parser.add_argument(
+        "--full-output",
+        action="store_true",
+        help="Print debug scan details, cache keys, and Safe results that are normally summarized.",
+    )
     parser.add_argument(
         "--force-dangerous",
         action="store_true",
