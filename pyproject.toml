@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aurguard"
+version = "0.1.0"
+description = "A yay/paru wrapper that scans AUR build files before installation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+aurg = "aurg.cli:run"
+
+[tool.setuptools.packages.find]
+include = ["aurg*"]
