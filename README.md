@@ -1,6 +1,6 @@
 # aurg
 
-`aurg` wraps `yay` or `paru` and scans AUR build files before installation. It uses local rules and, by default, Google Gemini. Packages classified as dangerous are blocked unless explicitly allowed.
+`aurg` wraps `yay` or `paru` and scans AUR build files before installation. It uses local rules and, by default, Google Gemini (as the only provider available). Packages classified as dangerous are blocked unless explicitly allowed.
 
 It is an advisory tool, not a security boundary. Review AUR build files before installing them.
 
